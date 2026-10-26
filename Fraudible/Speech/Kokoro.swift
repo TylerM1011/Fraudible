@@ -111,6 +111,7 @@ final class KokoroManager {
         guard isDownloaded else { throw KokoroError.notDownloaded }
         if status == .ready { return }
         if let loadTask { return try await loadTask.value }
+        Log.kokoro.info("ensureLoaded: loading model from \(Self.modelFile.path, privacy: .public)")
         status = .loading
         let task = Task {
             try await engine.load(modelFile: Self.modelFile)
@@ -119,7 +120,9 @@ final class KokoroManager {
         do {
             try await task.value
             status = .ready
+            Log.kokoro.info("ensureLoaded: ready")
         } catch {
+            Log.kokoro.error("ensureLoaded failed: \(String(describing: error), privacy: .public)")
             loadTask = nil
             status = .failed(error.localizedDescription)
             throw error
@@ -137,6 +140,12 @@ nonisolated enum KokoroError: LocalizedError {
         case .unknownVoice(let id): "Unknown Kokoro voice “\(id)”."
         }
     }
+}
+
+/// Audio for one chunk, with when each word is spoken.
+nonisolated struct KokoroAudio: Sendable {
+    var samples: [Float]
+    var words: [WordTiming]
 }
 
 /// Owns the KokoroTTS model. Every call runs on one serial background queue, because the
@@ -157,9 +166,12 @@ nonisolated final class KokoroEngine: @unchecked Sendable {
                     return continuation.resume(throwing: KokoroError.noVoices)
                 }
                 // Keep MLX's buffer cache small; phones don't have memory to spare.
-                Memory.cacheLimit = 64 * 1024 * 1024
+                GPU.set(cacheLimit: 64 * 1024 * 1024)
                 self.voices = voices
+                let started = Date()
+                Log.kokoro.info("load: \(voices.count, privacy: .public) voice styles; creating KokoroTTS")
                 self.tts = KokoroTTS(modelPath: modelFile, g2p: .misaki)
+                Log.kokoro.info("load: model ready in \(Date().timeIntervalSince(started), privacy: .public)s")
                 continuation.resume()
             }
         }
@@ -169,25 +181,45 @@ nonisolated final class KokoroEngine: @unchecked Sendable {
         queue.async {
             self.tts = nil
             self.voices = [:]
-            Memory.clearCache()
+            GPU.clearCache()
         }
     }
 
-    /// Synthesize `text` with a voice such as "bf_emma". Returns mono float samples at `sampleRate`.
+    /// Synthesize `text` with a voice such as "bf_emma". Returns mono float samples at `sampleRate`,
+    /// plus when each word is spoken (for highlighting).
     /// `useCPU` is for when the app is in the background, where iOS doesn't allow GPU work.
-    func synthesize(_ text: String, voice: String, useCPU: Bool) async throws -> [Float] {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[Float], Error>) in
+    func synthesize(_ text: String, voice: String, useCPU: Bool) async throws -> KokoroAudio {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<KokoroAudio, Error>) in
             queue.async {
                 do {
                     guard let tts = self.tts else { throw KokoroError.notDownloaded }
                     guard let style = self.voices["\(voice).npy"] ?? self.voices[voice] else { throw KokoroError.unknownVoice(voice) }
                     let language: Language = voice.hasPrefix("b") ? .enGB : .enUS
-                    let samples = try Device.withDefaultDevice(useCPU ? Device.cpu : Device.gpu) {
-                        try self.generate(tts, style: style, language: language, text: text)
+                    let started = Date()
+                    // Synthesize a sentence or so at a time to keep GPU memory in bounds.
+                    var samples: [Float] = []
+                    var words: [WordTiming] = []
+                    var pieceSearch = text.startIndex
+                    for piece in TextProcessing.kokoroPieces(text) {
+                        let (audio, tokens) = try Device.withDefaultDevice(useCPU ? Device.cpu : Device.gpu) {
+                            try self.generate(tts, style: style, language: language, text: piece)
+                        }
+                        // Where this piece sits in the chunk, so word ranges can be made chunk-relative.
+                        var pieceOffset = 0
+                        if let found = text.range(of: piece, range: pieceSearch..<text.endIndex) {
+                            pieceOffset = text.utf16.distance(from: text.startIndex, to: found.lowerBound)
+                            pieceSearch = found.upperBound
+                        }
+                        let timeOffset = Double(samples.count) / Self.sampleRate
+                        words += Self.wordTimings(tokens, in: piece, offset: pieceOffset, time: timeOffset)
+                        samples += audio
+                        GPU.clearCache()
                     }
-                    Memory.clearCache()
-                    continuation.resume(returning: samples)
+                    let stats = Self.stats(samples)
+                    Log.kokoro.info("synthesize: \(text.count, privacy: .public) chars -> \(Double(samples.count) / Self.sampleRate, privacy: .public)s audio in \(Date().timeIntervalSince(started), privacy: .public)s; \(words.count, privacy: .public) words; peak \(stats.peak, privacy: .public) rms \(stats.rms, privacy: .public) zcr \(stats.zcr, privacy: .public)")
+                    continuation.resume(returning: KokoroAudio(samples: samples, words: words))
                 } catch {
+                    Log.kokoro.error("synthesize failed: \(String(describing: error), privacy: .public)")
                     continuation.resume(throwing: error)
                 }
             }
@@ -195,19 +227,53 @@ nonisolated final class KokoroEngine: @unchecked Sendable {
     }
 
     /// Kokoro takes at most 510 phoneme tokens per call. Chunks are kept short, but if one is
-    /// still too long, split it at a space and synthesize the halves.
-    private func generate(_ tts: KokoroTTS, style: MLXArray, language: Language, text: String) throws -> [Float] {
+    /// still too long, split it at a space and synthesize the halves (word timings are dropped then).
+    private func generate(_ tts: KokoroTTS, style: MLXArray, language: Language, text: String) throws -> ([Float], [MToken]?) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.rangeOfCharacter(from: .alphanumerics) != nil else { return [] }
+        guard trimmed.rangeOfCharacter(from: .alphanumerics) != nil else { return ([], nil) }
         do {
-            return try tts.generateAudio(voice: style, language: language, text: trimmed).0
+            // withError turns MLX failures (e.g. running out of GPU memory) into Swift errors
+            // instead of crashing the app.
+            return try withError { try tts.generateAudio(voice: style, language: language, text: trimmed) }
         } catch KokoroTTS.KokoroTTSError.tooManyTokens {
             let words = trimmed.split(separator: " ")
-            guard words.count > 1 else { return [] }
+            guard words.count > 1 else { return ([], nil) }
             let mid = words.count / 2
             let first = try generate(tts, style: style, language: language, text: words[..<mid].joined(separator: " "))
             let second = try generate(tts, style: style, language: language, text: words[mid...].joined(separator: " "))
-            return first + second
+            return (first.0 + second.0, nil)
         }
+    }
+
+    /// Kokoro reports each token's text and start/end time. Find each word in the piece (in order)
+    /// to turn that into chunk-relative character ranges.
+    private static func wordTimings(_ tokens: [MToken]?, in piece: String, offset: Int, time: Double) -> [WordTiming] {
+        guard let tokens else { return [] }
+        var result: [WordTiming] = []
+        var cursor = piece.startIndex
+        for token in tokens {
+            guard let start = token.start_ts, let end = token.end_ts,
+                  token.text.rangeOfCharacter(from: .alphanumerics) != nil,
+                  let found = piece.range(of: token.text, range: cursor..<piece.endIndex) else { continue }
+            cursor = found.upperBound
+            let lower = offset + piece.utf16.distance(from: piece.startIndex, to: found.lowerBound)
+            let upper = offset + piece.utf16.distance(from: piece.startIndex, to: found.upperBound)
+            result.append(WordTiming(start: time + start, end: time + end, range: lower..<upper))
+        }
+        return result
+    }
+
+    /// Peak level, RMS loudness and zero-crossing rate: speech is roughly peak 0.3–1, RMS 0.03–0.15,
+    /// ZCR 0.02–0.15; static noise has a ZCR near 0.5.
+    private static func stats(_ samples: [Float]) -> (peak: Float, rms: Float, zcr: Float) {
+        guard samples.count > 1 else { return (0, 0, 0) }
+        var peak: Float = 0, sumSquares: Float = 0, crossings = 0
+        for i in samples.indices {
+            let s = samples[i]
+            peak = max(peak, abs(s))
+            sumSquares += s * s
+            if i > 0, (samples[i - 1] < 0) != (s < 0) { crossings += 1 }
+        }
+        return (peak, (sumSquares / Float(samples.count)).squareRoot(), Float(crossings) / Float(samples.count - 1))
     }
 }

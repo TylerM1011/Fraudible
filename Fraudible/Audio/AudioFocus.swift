@@ -36,10 +36,11 @@ final class AudioFocus {
     func activateSession() {
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playback, mode: .spokenAudio, policy: .longFormAudio)
+            try session.setCategory(.playback, mode: .spokenAudio)
             try session.setActive(true)
         } catch {
             // Falls back to the default session; playback still works in the foreground.
+            Log.audio.error("audio session: \(String(describing: error), privacy: .public)")
         }
         configureRemoteCommands()
     }

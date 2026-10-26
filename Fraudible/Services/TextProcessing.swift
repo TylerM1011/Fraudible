@@ -116,6 +116,37 @@ nonisolated enum TextProcessing {
             .filter { $0.rangeOfCharacter(from: .alphanumerics) != nil }
     }
 
+    /// Kokoro's memory use grows steeply with the length of each request: around 140 characters
+    /// is fine on an iPhone, but around 350 runs the GPU out of memory and crashes. So each chunk is
+    /// synthesized in pieces of at most `max` characters — whole sentences where possible, then
+    /// clauses, then words — and the audio is joined back together.
+    static func kokoroPieces(_ text: String, max: Int = 120) -> [String] {
+        var pieces: [String] = []
+        for sentence in splitSentences(text) {
+            if sentence.count <= max {
+                pieces.append(sentence)
+                continue
+            }
+            // Split long sentences after commas, semicolons, colons and dashes.
+            let clauses = sentence.regexMatches(#"[^,;:—–]+[,;:—–]*\s*"#)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            for clause in clauses.isEmpty ? [sentence] : clauses {
+                pieces += clause.count <= max ? [clause] : hardSplit(clause, max: max)
+            }
+        }
+        // Re-join short neighbours so the voice keeps natural phrasing across them.
+        var merged: [String] = []
+        for piece in pieces {
+            if let last = merged.last, last.count + piece.count + 1 <= max {
+                merged[merged.count - 1] = "\(last) \(piece)"
+            } else {
+                merged.append(piece)
+            }
+        }
+        return merged
+    }
+
     private static func splitSentences(_ paragraph: String) -> [String] {
         let parts = paragraph.regexMatches(#"[^.!?…]+(?:[.!?…]+["'”’)\]]*|$)\s*"#)
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -145,22 +176,33 @@ nonisolated enum TextProcessing {
         var chunks: [Chunk] = []
         for (index, p) in paragraphs.enumerated() {
             if p.count <= max {
-                chunks.append(Chunk(text: p, paragraph: index))
+                chunks.append(Chunk(text: p, paragraph: index, offset: 0))
                 continue
+            }
+            // Each chunk is a run of the paragraph's own text, so record where it starts
+            // (in UTF-16 units) to map spoken words back onto the paragraph for highlighting.
+            var searchFrom = p.startIndex
+            func add(_ text: String) {
+                var offset = 0
+                if let found = p.range(of: text, range: searchFrom..<p.endIndex) {
+                    offset = p.utf16.distance(from: p.startIndex, to: found.lowerBound)
+                    searchFrom = found.upperBound
+                }
+                chunks.append(Chunk(text: text, paragraph: index, offset: offset))
             }
             var current = ""
             for sentence in splitSentences(p) {
                 let pieces = sentence.count > max ? hardSplit(sentence, max: max) : [sentence]
                 for piece in pieces {
                     if !current.isEmpty && current.count + piece.count + 1 > max {
-                        chunks.append(Chunk(text: current, paragraph: index))
+                        add(current)
                         current = piece
                     } else {
                         current = current.isEmpty ? piece : "\(current) \(piece)"
                     }
                 }
             }
-            if !current.isEmpty { chunks.append(Chunk(text: current, paragraph: index)) }
+            if !current.isEmpty { add(current) }
         }
         return chunks
     }
@@ -171,6 +213,15 @@ nonisolated struct Chunk: Hashable, Sendable {
     var text: String
     /// Index into the paragraph array. Several chunks can share one paragraph.
     var paragraph: Int
+    /// Where this chunk's text starts inside its paragraph, in UTF-16 units.
+    var offset: Int = 0
+}
+
+/// When a word is spoken, as a range of UTF-16 offsets into the chunk's text.
+nonisolated struct WordTiming: Sendable {
+    var start: Double
+    var end: Double
+    var range: Range<Int>
 }
 
 // MARK: - Small regex helpers (NSRegularExpression, so behaviour matches the JS original)

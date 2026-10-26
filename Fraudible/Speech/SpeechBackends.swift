@@ -5,6 +5,8 @@ import UIKit
 protocol SpeechBackend: AnyObject {
     /// A chunk started playing.
     var onChunkStart: ((Int) -> Void)? { get set }
+    /// A word started being spoken: its range of UTF-16 offsets within the current chunk's text.
+    var onWord: ((Range<Int>) -> Void)? { get set }
     /// The last chunk finished.
     var onFinish: (() -> Void)? { get set }
     /// Waiting for audio that isn't ready yet (Kokoro only).
@@ -24,6 +26,7 @@ protocol SpeechBackend: AnyObject {
 /// Built-in voices via AVSpeechSynthesizer: nothing to download, works everywhere.
 final class AppleSpeechBackend: SpeechBackend {
     var onChunkStart: ((Int) -> Void)?
+    var onWord: ((Range<Int>) -> Void)?
     var onFinish: (() -> Void)?
     var onBuffering: ((Bool) -> Void)?
     var onError: ((String) -> Void)?
@@ -43,6 +46,10 @@ final class AppleSpeechBackend: SpeechBackend {
         synthesizer.usesApplicationAudioSession = true
         synthesizer.delegate = relay
         relay.onFinish = { [weak self] id in self?.utteranceFinished(id) }
+        relay.onWord = { [weak self] id, range in
+            guard let self, let current = self.current, current.id == id else { return }
+            self.onWord?(range)
+        }
     }
 
     func play(from index: Int) {
@@ -78,6 +85,7 @@ final class AppleSpeechBackend: SpeechBackend {
             onFinish?()
             return
         }
+        Log.reader.info("apple: speak chunk \(index, privacy: .public) voice=\(self.voice?.identifier ?? "default", privacy: .public)")
         let utterance = AVSpeechUtterance(string: chunks[index].text)
         utterance.voice = voice
         utterance.rate = Self.utteranceRate(rate)
@@ -104,11 +112,19 @@ final class AppleSpeechBackend: SpeechBackend {
 /// AVSpeechSynthesizer may call its delegate off the main thread; hop back before touching state.
 nonisolated private final class SpeechDelegateRelay: NSObject, AVSpeechSynthesizerDelegate, @unchecked Sendable {
     var onFinish: (@MainActor (ObjectIdentifier) -> Void)?
+    var onWord: (@MainActor (ObjectIdentifier, Range<Int>) -> Void)?
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         let id = ObjectIdentifier(utterance)
         let handler = onFinish
         Task { @MainActor in handler?(id) }
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, willSpeakRangeOfSpeechString characterRange: NSRange, utterance: AVSpeechUtterance) {
+        let id = ObjectIdentifier(utterance)
+        let range = characterRange.location..<(characterRange.location + characterRange.length)
+        let handler = onWord
+        Task { @MainActor in handler?(id, range) }
     }
 }
 
@@ -118,6 +134,7 @@ nonisolated private final class SpeechDelegateRelay: NSObject, AVSpeechSynthesiz
 /// AVAudioEngine; speed changes use a time-pitch unit, so they apply instantly without re-synthesis.
 final class KokoroSpeechBackend: SpeechBackend {
     var onChunkStart: ((Int) -> Void)?
+    var onWord: ((Range<Int>) -> Void)?
     var onFinish: (() -> Void)?
     var onBuffering: ((Bool) -> Void)?
     var onError: ((String) -> Void)?
@@ -135,16 +152,26 @@ final class KokoroSpeechBackend: SpeechBackend {
     private let format = AVAudioFormat(standardFormatWithSampleRate: KokoroEngine.sampleRate, channels: 1)!
 
     private var buffers: [Int: AVAudioPCMBuffer] = [:]
+    private var words: [Int: [WordTiming]] = [:]
     /// The chunk that is playing (or that we're waiting to play).
     private var position = 0
+    /// The chunk whose buffer is scheduled on the player, if any.
+    private var scheduled: Int?
     private var waiting = false
     private var active = false
+    /// The user paused: don't start anything until they resume.
+    private var paused = false
     /// Bumped on every jump/stop so completion callbacks from old buffers are ignored.
     private var playToken = 0
     private var builder: Task<Void, Never>?
     private var builderToken = 0
     private var configObserver: NSObjectProtocol?
     private var foregroundObserver: NSObjectProtocol?
+    /// Polls the playback position to report which word is being spoken.
+    private var wordTimer: Timer?
+    /// The player's sample time when the current chunk started, and the last word reported.
+    private var chunkStartSample: AVAudioFramePosition = 0
+    private var lastWord: Range<Int>?
 
     init(chunks: [Chunk], engine: KokoroEngine, voiceID: String, rate: Double) {
         self.chunks = chunks
@@ -159,7 +186,7 @@ final class KokoroSpeechBackend: SpeechBackend {
         // Route changes (e.g. headphones) stop the engine; restart the current chunk if we were playing.
         configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: audioEngine, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.active, !self.waiting else { return }
+                guard let self, self.active, !self.paused, !self.waiting else { return }
                 self.play(from: self.position)
             }
         }
@@ -170,39 +197,54 @@ final class KokoroSpeechBackend: SpeechBackend {
     }
 
     func play(from index: Int) {
+        Log.reader.info("kokoro backend: play from \(index, privacy: .public)")
         playToken += 1
         playerNode.stop()
+        scheduled = nil
         active = true
+        paused = false
         position = index
         buffers = buffers.filter { $0.key >= index - 1 && $0.key <= index + Self.lookahead }
+        words = words.filter { buffers[$0.key] != nil }
         startBuilder()
         playCurrent()
     }
 
     func pause() {
+        Log.reader.info("kokoro backend: pause")
+        paused = true
         playerNode.pause()
+        stopWordTimer()
     }
 
     func resume() {
         guard active else { return }
+        paused = false
         if !audioEngine.isRunning {
             // The engine was stopped (interruption, route change): start the chunk again.
             play(from: position)
-            return
+        } else if scheduled == position {
+            playerNode.play()
+            startWordTimer()
+        } else {
+            playCurrent()
         }
-        playerNode.play()
     }
 
     func stop() {
         active = false
         waiting = false
+        paused = false
+        scheduled = nil
         playToken += 1
         builderToken += 1
         builder?.cancel()
         builder = nil
+        stopWordTimer()
         playerNode.stop()
         audioEngine.stop()
         buffers = [:]
+        words = [:]
         for observer in [configObserver, foregroundObserver].compactMap({ $0 }) {
             NotificationCenter.default.removeObserver(observer)
         }
@@ -220,10 +262,12 @@ final class KokoroSpeechBackend: SpeechBackend {
         guard active else { return }
         guard position < chunks.count else {
             active = false
+            stopWordTimer()
             onFinish?()
             return
         }
         guard let buffer = buffers[position] else {
+            Log.reader.info("kokoro backend: waiting for chunk \(self.position, privacy: .public)")
             waiting = true
             onBuffering?(true)
             return
@@ -232,27 +276,66 @@ final class KokoroSpeechBackend: SpeechBackend {
             waiting = false
             onBuffering?(false)
         }
+        // Paused while waiting for audio: keep it ready, but don't start until the user resumes.
+        guard !paused else { return }
         do {
             if !audioEngine.isRunning { try audioEngine.start() }
+            Log.reader.info("kokoro backend: playing chunk \(self.position, privacy: .public), \(buffer.frameLength, privacy: .public) frames")
         } catch {
+            Log.reader.error("kokoro backend: engine start failed: \(String(describing: error), privacy: .public)")
             onError?("Couldn’t start audio: \(error.localizedDescription)")
             return
         }
         let token = playToken
         let index = position
+        chunkStartSample = currentSampleTime() ?? 0
+        lastWord = nil
+        scheduled = index
         playerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack, completionHandler: onMainActor { [weak self] in
             self?.chunkFinished(token: token, index: index)
         })
         playerNode.play()
         onChunkStart?(index)
+        startWordTimer()
     }
 
     private func chunkFinished(token: Int, index: Int) {
         guard token == playToken, active, index == position else { return }
         buffers[index - 1] = nil // keep one behind for a quick "previous"
+        words[index - 1] = nil
+        scheduled = nil
         position = index + 1
         startBuilder()
         playCurrent()
+    }
+
+    // MARK: Word tracking
+
+    private func currentSampleTime() -> AVAudioFramePosition? {
+        guard let nodeTime = playerNode.lastRenderTime, nodeTime.isSampleTimeValid,
+              let playerTime = playerNode.playerTime(forNodeTime: nodeTime) else { return nil }
+        return playerTime.sampleTime
+    }
+
+    private func startWordTimer() {
+        guard wordTimer == nil else { return }
+        wordTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reportWord() }
+        }
+    }
+
+    private func stopWordTimer() {
+        wordTimer?.invalidate()
+        wordTimer = nil
+    }
+
+    private func reportWord() {
+        guard let index = scheduled, let timings = words[index], !timings.isEmpty,
+              let now = currentSampleTime() else { return }
+        let seconds = Double(now - chunkStartSample) / KokoroEngine.sampleRate
+        guard let word = timings.last(where: { $0.start <= seconds }), word.range != lastWord else { return }
+        lastWord = word.range
+        onWord?(word.range)
     }
 
     // MARK: Building
@@ -272,9 +355,10 @@ final class KokoroSpeechBackend: SpeechBackend {
                 guard let self, token == self.builderToken, let index = self.nextToBuild() else { break }
                 let useCPU = UIApplication.shared.applicationState == .background
                 do {
-                    let samples = try await self.engine.synthesize(self.chunks[index].text, voice: self.voiceID, useCPU: useCPU)
+                    let audio = try await self.engine.synthesize(self.chunks[index].text, voice: self.voiceID, useCPU: useCPU)
                     guard token == self.builderToken, !Task.isCancelled else { break }
-                    self.buffers[index] = self.makeBuffer(samples)
+                    self.buffers[index] = self.makeBuffer(audio.samples)
+                    self.words[index] = audio.words
                     if self.waiting && index == self.position { self.playCurrent() }
                 } catch {
                     guard token == self.builderToken else { break }

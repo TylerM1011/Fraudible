@@ -12,6 +12,8 @@ final class ReaderSession: AudioOwner {
     private(set) var loadError: String?
     /// The paragraph being read (or that reading will start from).
     private(set) var index: Int
+    /// The word being spoken, as UTF-16 offsets into the current paragraph's text.
+    private(set) var word: Range<Int>?
     /// A read-aloud session is active (it may be paused).
     private(set) var reading = false
     private(set) var isPlaying = false
@@ -72,6 +74,7 @@ final class ReaderSession: AudioOwner {
     // MARK: - Controls
 
     func togglePlay() {
+        Log.reader.info("togglePlay playing=\(self.isPlaying, privacy: .public) reading=\(self.reading, privacy: .public) backend=\(self.backend != nil, privacy: .public) chunks=\(self.chunks.count, privacy: .public) voice=\(self.voice.id, privacy: .public)")
         if isPlaying {
             backend?.pause()
             isPlaying = false
@@ -132,6 +135,7 @@ final class ReaderSession: AudioOwner {
     /// End the session entirely (leaving the screen).
     func stop() {
         tearDownBackend()
+        word = nil
         reading = false
         isPlaying = false
         buffering = false
@@ -142,6 +146,7 @@ final class ReaderSession: AudioOwner {
 
     private func setParagraph(_ i: Int) {
         index = i
+        word = nil
         chunkIndex = chunks.firstIndex { $0.paragraph == i } ?? 0
         library.update(bookID) {
             $0.ttsPosition = i
@@ -151,7 +156,10 @@ final class ReaderSession: AudioOwner {
 
     /// Start (or restart) reading from a paragraph, optionally resuming at an exact chunk within it.
     private func start(fromParagraph paragraph: Int, resumeChunk: Int? = nil) {
-        guard !chunks.isEmpty else { return }
+        guard !chunks.isEmpty else {
+            Log.reader.error("start: no chunks loaded yet (paragraphs=\(self.paragraphs?.count ?? -1, privacy: .public))")
+            return
+        }
         let target: Int
         if let resumeChunk, chunks.indices.contains(resumeChunk), chunks[resumeChunk].paragraph == paragraph {
             target = resumeChunk
@@ -164,6 +172,7 @@ final class ReaderSession: AudioOwner {
         isPlaying = true
         AudioFocus.shared.claim(self) // don't talk over an audiobook
 
+        Log.reader.info("start paragraph=\(paragraph, privacy: .public) chunk=\(target, privacy: .public) engine=\(self.voice.engine.rawValue, privacy: .public) existingBackend=\(self.backend != nil, privacy: .public)")
         if let backend {
             backend.play(from: target)
             return
@@ -176,8 +185,10 @@ final class ReaderSession: AudioOwner {
             let voiceAtStart = voice
             Task {
                 do {
+                    Log.reader.info("start: loading Kokoro (downloaded=\(self.kokoro.isDownloaded, privacy: .public))")
                     try await kokoro.ensureLoaded()
                     preparingVoice = false
+                    Log.reader.info("start: Kokoro loaded; reading=\(self.reading, privacy: .public) playing=\(self.isPlaying, privacy: .public)")
                     // The user may have stopped or changed voice while the model loaded.
                     guard reading, isPlaying, voice == voiceAtStart, backend == nil else { return }
                     let made = KokoroSpeechBackend(chunks: chunks, engine: kokoro.engine, voiceID: voice.engineVoiceID, rate: rate)
@@ -192,6 +203,7 @@ final class ReaderSession: AudioOwner {
 
     private func attach(_ made: SpeechBackend) -> SpeechBackend {
         made.onChunkStart = { [weak self] i in self?.chunkStarted(i) }
+        made.onWord = { [weak self] range in self?.wordSpoken(range) }
         made.onFinish = { [weak self] in self?.finished() }
         made.onBuffering = { [weak self] waiting in self?.buffering = waiting }
         made.onError = { [weak self] message in self?.fail(message) }
@@ -206,11 +218,20 @@ final class ReaderSession: AudioOwner {
         preparingVoice = false
     }
 
+    private func wordSpoken(_ range: Range<Int>) {
+        guard chunks.indices.contains(chunkIndex) else { return }
+        let offset = chunks[chunkIndex].offset
+        word = (offset + range.lowerBound)..<(offset + range.upperBound)
+    }
+
     private func chunkStarted(_ i: Int) {
         guard chunks.indices.contains(i) else { return }
         chunkIndex = i
         let paragraph = chunks[i].paragraph
-        if paragraph != index { index = paragraph }
+        if paragraph != index {
+            index = paragraph
+            word = nil
+        }
         library.update(bookID) {
             $0.ttsPosition = paragraph
             $0.ttsChunkPosition = i
@@ -226,6 +247,7 @@ final class ReaderSession: AudioOwner {
     }
 
     private func fail(_ message: String) {
+        Log.reader.error("fail: \(message, privacy: .public)")
         tearDownBackend()
         reading = false
         isPlaying = false

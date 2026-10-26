@@ -98,7 +98,7 @@ private struct ReaderContent: View {
                 LazyVStack(alignment: .leading, spacing: 18) {
                     ForEach(paragraphs.indices, id: \.self) { i in
                         let active = i == session.index
-                        Text(paragraphs[i])
+                        Text(Self.highlighted(paragraphs[i], word: active ? session.word : nil))
                             .font(.system(size: 19, design: .serif))
                             .lineSpacing(7)
                             .foregroundStyle(active ? .primary : .secondary)
@@ -130,6 +130,19 @@ private struct ReaderContent: View {
         }
     }
 
+    /// The paragraph with the word being spoken marked.
+    private static func highlighted(_ text: String, word: Range<Int>?) -> AttributedString {
+        var attributed = AttributedString(text)
+        guard let word, word.lowerBound >= 0, word.upperBound <= text.utf16.count, !word.isEmpty else { return attributed }
+        let lower = String.Index(utf16Offset: word.lowerBound, in: text)
+        let upper = String.Index(utf16Offset: word.upperBound, in: text)
+        if let range = Range(lower..<upper, in: attributed) {
+            attributed[range].backgroundColor = Color.accentColor.opacity(0.35)
+            attributed[range].foregroundColor = .primary
+        }
+        return attributed
+    }
+
     // MARK: - Floating controls
 
     private var dock: some View {
@@ -157,7 +170,8 @@ private struct ReaderContent: View {
 
                     Button(action: session.togglePlay) {
                         ZStack {
-                            if session.preparingVoice || (session.reading && session.buffering) {
+                            if session.isPlaying && (session.preparingVoice || session.buffering) {
+                                // Still preparing audio; tapping here pauses.
                                 ProgressView().tint(.white)
                             } else {
                                 Image(systemName: session.isPlaying ? "pause.fill" : "play.fill")
