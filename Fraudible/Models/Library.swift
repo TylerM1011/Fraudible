@@ -153,9 +153,9 @@ final class Library {
 
     private func run(_ id: String, _ result: SearchResult) {
         // Only publish whole-percent changes so rows don't re-render on every byte.
-        let onProgress: Storage.Progress = { [weak self] fraction in
+        // The library lives for the whole app, so a strong capture is fine here.
+        let onProgress: Storage.Progress = { [self] fraction in
             Task { @MainActor in
-                guard let self else { return }
                 let pct = Int(fraction * 100)
                 guard let current = self.book(id), Int(current.progress * 100) != pct else { return }
                 self.update(id) { $0.progress = fraction }

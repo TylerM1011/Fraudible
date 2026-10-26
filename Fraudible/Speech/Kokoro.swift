@@ -60,9 +60,10 @@ final class KokoroManager {
             defer { downloadTask = nil }
             let partial = Self.modelFile.appendingPathExtension("part")
             do {
-                try await Downloader.download(Self.modelURL, to: partial) { [weak self] p in
+                // The manager lives for the whole app, so a strong capture is fine here.
+                try await Downloader.download(Self.modelURL, to: partial) { [self] p in
                     Task { @MainActor in
-                        guard let self, Int(p * 100) != Int(self.progress * 100) else { return }
+                        guard Int(p * 100) != Int(self.progress * 100) else { return }
                         self.progress = p
                     }
                 }
