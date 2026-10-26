@@ -220,7 +220,7 @@ nonisolated struct Chunk: Hashable, Sendable {
 }
 
 /// When a word is spoken, as a range of UTF-16 offsets into the chunk's text.
-nonisolated struct WordTiming: Sendable {
+nonisolated struct WordTiming: Codable, Sendable {
     var start: Double
     var end: Double
     var range: Range<Int>

@@ -4,7 +4,8 @@ import SwiftUI
 struct FraudibleApp: App {
     @State private var library: Library
     @State private var player: AudiobookPlayer
-    @State private var kokoro = KokoroManager()
+    @State private var kokoro: KokoroManager
+    @State private var offlineAudio: OfflineAudioMaker
     @State private var router = AppRouter()
     @Environment(\.scenePhase) private var scenePhase
 
@@ -12,6 +13,9 @@ struct FraudibleApp: App {
         let library = Library()
         _library = State(initialValue: library)
         _player = State(initialValue: AudiobookPlayer(library: library))
+        let kokoro = KokoroManager()
+        _kokoro = State(initialValue: kokoro)
+        _offlineAudio = State(initialValue: OfflineAudioMaker(library: library, kokoro: kokoro))
     }
 
     var body: some Scene {
@@ -20,6 +24,7 @@ struct FraudibleApp: App {
                 .environment(library)
                 .environment(player)
                 .environment(kokoro)
+                .environment(offlineAudio)
                 .environment(router)
         }
         .onChange(of: scenePhase) { _, phase in

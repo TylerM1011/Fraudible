@@ -155,9 +155,12 @@ final class KokoroSpeechBackend: SpeechBackend {
     /// (which makes the rest of the app stutter) for minutes at a time.
     private static let lookahead = 6
 
+    /// Where each chunk's audio comes from: the book's offline audio if it has been made,
+    /// otherwise Kokoro synthesizing it now. The flag asks for the CPU (app in the background).
+    typealias AudioSource = (_ index: Int, _ useCPU: Bool) async throws -> KokoroAudio
+
     private let chunks: [Chunk]
-    private let engine: KokoroEngine
-    private let voiceID: String
+    private let source: AudioSource
 
     private let audioEngine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
@@ -190,10 +193,9 @@ final class KokoroSpeechBackend: SpeechBackend {
     /// How far into the chunk's audio the scheduled buffer starts, in seconds.
     private var chunkTimeOffset: Double = 0
 
-    init(chunks: [Chunk], engine: KokoroEngine, voiceID: String, rate: Double) {
+    init(chunks: [Chunk], rate: Double, source: @escaping AudioSource) {
         self.chunks = chunks
-        self.engine = engine
-        self.voiceID = voiceID
+        self.source = source
         audioEngine.attach(playerNode)
         audioEngine.attach(timePitch)
         audioEngine.connect(playerNode, to: timePitch, format: format)
@@ -392,7 +394,7 @@ final class KokoroSpeechBackend: SpeechBackend {
                 guard let self, token == self.builderToken, let index = self.nextToBuild() else { break }
                 let useCPU = UIApplication.shared.applicationState == .background
                 do {
-                    let audio = try await self.engine.synthesize(self.chunks[index].text, voice: self.voiceID, useCPU: useCPU)
+                    let audio = try await self.source(index, useCPU)
                     guard token == self.builderToken, !Task.isCancelled else { break }
                     self.buffers[index] = self.makeBuffer(audio.samples)
                     self.words[index] = audio.words

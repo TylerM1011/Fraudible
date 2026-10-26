@@ -11,6 +11,7 @@ struct ReaderView: View {
     @State private var session: ReaderSession?
     @State private var showVoices = false
     @State private var showPDF = false
+    @State private var showOffline = false
 
     var body: some View {
         Group {
@@ -35,9 +36,18 @@ struct ReaderView: View {
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
+                OfflineAudioButton(bookID: bookID) { showOffline = true }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 Button { showVoices = true } label: {
                     Label("Voice", systemImage: "person.wave.2")
                 }
+            }
+        }
+        .sheet(isPresented: $showOffline) {
+            if let book = library.book(bookID), let session {
+                OfflineAudioSheet(book: book, currentVoice: session.voice)
+                    .presentationDetents([.medium, .large])
             }
         }
         .sheet(isPresented: $showPDF) {

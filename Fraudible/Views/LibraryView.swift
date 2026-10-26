@@ -235,6 +235,7 @@ private struct ContinueCard: View {
 /// One book in the library, with its download or listening progress.
 private struct LibraryRow: View {
     let book: LibraryBook
+    @Environment(OfflineAudioMaker.self) private var maker
 
     var body: some View {
         HStack(spacing: 14) {
@@ -283,7 +284,9 @@ private struct LibraryRow: View {
         switch book.status {
         case .downloading: return "Downloading \(Int(book.progress * 100))%"
         case .error: return book.error ?? "Download failed. Tap to retry."
-        case .ready: return Self.whereYouAre(book)
+        case .ready:
+            let place = Self.whereYouAre(book)
+            return maker.badge(book.id).map { "\(place) · \($0)" } ?? place
         }
     }
 

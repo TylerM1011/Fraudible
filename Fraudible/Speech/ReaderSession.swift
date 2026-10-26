@@ -50,7 +50,9 @@ final class ReaderSession: AudioOwner {
         self.chunkIndex = book.ttsChunkPosition ?? 0
         self.savedWordOffset = book.ttsWordOffset
         self.rate = book.ttsRate ?? 1
-        self.voice = VoiceCatalog.resolve(book.ttsVoice, kokoroAvailable: kokoro.isDownloaded)
+        let offline = OfflineAudioStore.voice(for: book.id).map { "kokoro:\($0)" }
+        let offlineReady = offline.map { OfflineAudioStore.isComplete(book.id, voice: String($0.dropFirst(7))) } ?? false
+        self.voice = VoiceCatalog.resolve(book.ttsVoice, kokoroAvailable: kokoro.isDownloaded || (offlineReady && offline == book.ttsVoice))
         load(book)
     }
 
@@ -138,7 +140,7 @@ final class ReaderSession: AudioOwner {
     }
 
     func choose(_ newVoice: ReaderVoice) {
-        if newVoice.engine == .kokoro && !kokoro.isDownloaded {
+        if newVoice.engine == .kokoro && !kokoro.isDownloaded && !OfflineAudioStore.isComplete(bookID, voice: newVoice.engineVoiceID) {
             // Picked a Kokoro voice before downloading the model: fetch it, then switch.
             pendingVoice = newVoice
             kokoro.download()
@@ -226,23 +228,41 @@ final class ReaderSession: AudioOwner {
         case .apple:
             attach(AppleSpeechBackend(chunks: chunks, voiceIdentifier: voice.engineVoiceID, rate: rate)).play(from: target, at: offsetInChunk)
         case .kokoro:
-            preparingVoice = true
-            let voiceAtStart = voice
-            Task {
-                do {
-                    try await kokoro.ensureLoaded()
-                    preparingVoice = false
-                    // The user may have paused or changed voice while the model loaded.
-                    guard reading, isPlaying, voice == voiceAtStart, backend == nil else { return }
-                    let made = KokoroSpeechBackend(chunks: chunks, engine: kokoro.engine, voiceID: voice.engineVoiceID, rate: rate)
-                    attach(made).play(from: chunkIndex, at: offsetInChunk)
-                } catch {
-                    preparingVoice = false
-                    fail(error.localizedDescription)
+            let voiceID = voice.engineVoiceID
+            if OfflineAudioStore.isComplete(bookID, voice: voiceID) {
+                // All the audio is already on the phone: no need to load the model at all.
+                attach(KokoroSpeechBackend(chunks: chunks, rate: rate, source: audioSource(voiceID))).play(from: target, at: offsetInChunk)
+            } else {
+                preparingVoice = true
+                let voiceAtStart = voice
+                Task {
+                    do {
+                        try await kokoro.ensureLoaded()
+                        preparingVoice = false
+                        // The user may have paused or changed voice while the model loaded.
+                        guard reading, isPlaying, voice == voiceAtStart, backend == nil else { return }
+                        let made = KokoroSpeechBackend(chunks: chunks, rate: rate, source: audioSource(voiceID))
+                        attach(made).play(from: chunkIndex, at: offsetInChunk)
+                    } catch {
+                        preparingVoice = false
+                        fail(error.localizedDescription)
+                    }
                 }
             }
         }
         publishNowPlaying()
+    }
+
+    /// Kokoro audio for a chunk: from the book's offline audio when that chunk has been made,
+    /// otherwise synthesized now.
+    private func audioSource(_ voiceID: String) -> KokoroSpeechBackend.AudioSource {
+        let dir = OfflineAudioStore.directory(bookID, voice: voiceID)
+        let chunks = chunks, kokoro = kokoro
+        return { index, useCPU in
+            if let saved = await OfflineAudioStore.load(index, in: dir) { return saved }
+            try await kokoro.ensureLoaded()
+            return try await kokoro.engine.synthesize(chunks[index].text, voice: voiceID, useCPU: useCPU)
+        }
     }
 
     private func attach(_ made: SpeechBackend) -> SpeechBackend {
