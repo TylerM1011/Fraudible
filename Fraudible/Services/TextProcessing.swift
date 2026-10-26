@@ -18,6 +18,47 @@ nonisolated enum TextProcessing {
         return body
     }
 
+    /// Tidy the machine-read (OCR) text of a scanned book so it reads aloud well: drops page
+    /// numbers, running headers repeated on every page, and scanner stamps, and joins paragraphs
+    /// that were split across a page break.
+    static func cleanOCR(_ text: String) -> String {
+        let normalised = text.regexReplacing(#"\r\n?"#, with: "\n")
+        let pages = normalised.components(separatedBy: "\u{0C}")
+        let lines = pages.flatMap { $0.components(separatedBy: "\n") }
+
+        // A header's text with any page number removed, so "12 THE TITLE" and "THE TITLE 13" match.
+        func headerKey(_ line: String) -> String {
+            line.regexReplacing(#"\b[\divxlcIVXLC]+\s*$|^\s*[\divxlcIVXLC]+\b"#, with: "")
+                .trimmingCharacters(in: .whitespaces)
+                .lowercased()
+        }
+        func looksLikeHeader(_ line: String) -> Bool {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            guard t.count <= 70, t.rangeOfCharacter(from: .letters) != nil else { return false }
+            let letters = t.unicodeScalars.filter { CharacterSet.letters.contains($0) }
+            let upper = letters.filter { CharacterSet.uppercaseLetters.contains($0) }
+            let mostlyUpper = Double(upper.count) >= Double(letters.count) * 0.8
+            let hasPageNumber = t.regexFirstMatch(#"^\d{1,4}\s|\s\d{1,4}$"#) != nil
+            return mostlyUpper || hasPageNumber
+        }
+
+        var counts: [String: Int] = [:]
+        for line in lines where looksLikeHeader(line) { counts[headerKey(line), default: 0] += 1 }
+
+        let kept = lines.filter { line in
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.isEmpty { return true }
+            // Bare page numbers, in digits or roman numerals.
+            if t.regexFirstMatch(#"^[\[\(]?(\d{1,4}|[ivxlcdm]{1,7}|[IVXLCDM]{1,7})[\]\)]?\.?$"#) != nil { return false }
+            if t.regexFirstMatch(#"^(digitized|digitised) by"#, options: [.caseInsensitive]) != nil { return false }
+            // Chapter headings repeat in shape ("CHAPTER I", "CHAPTER II"…) but are worth hearing.
+            if t.regexFirstMatch(#"^(chapter|book|part|canto|act|scene|letter)\b"#, options: [.caseInsensitive]) != nil { return true }
+            if looksLikeHeader(t), (counts[headerKey(t)] ?? 0) >= 3 { return false }
+            return true
+        }
+        return kept.joined(separator: "\n")
+    }
+
     /// Very small HTML-to-text converter, used for Gutenberg HTML editions and EPUB chapters.
     static func htmlToText(_ html: String) -> String {
         var s = html

@@ -177,6 +177,18 @@ final class Library {
                         $0.coverFileName = coverName
                         $0.error = nil
                     }
+                case .tts where result.source == .openlibrary:
+                    let saved = try await Storage.downloadScannedBook(bookId: id, result: result, onProgress: onProgress)
+                    let coverName = await cover
+                    self?.update(id) {
+                        $0.status = .ready
+                        $0.progress = 1
+                        $0.textFileName = saved.textFileName
+                        $0.pdfFileName = saved.pdfFileName
+                        $0.ttsParagraphs = saved.paragraphs
+                        $0.coverFileName = coverName
+                        $0.error = nil
+                    }
                 case .tts:
                     let saved = try await Storage.downloadEbook(bookId: id, result: result, onProgress: onProgress)
                     let coverName = await cover
@@ -211,6 +223,13 @@ nonisolated extension LibraryBook {
             if FileManager.default.fileExists(atPath: url.path) { return url }
         }
         return coverURL
+    }
+
+    /// The original scanned PDF, for Open Library books.
+    var pdfFileURL: URL? {
+        guard let pdfFileName else { return nil }
+        let url = Storage.booksRoot.appendingPathComponent(id).appendingPathComponent(pdfFileName)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
     func trackFileURL(_ index: Int) -> URL? {

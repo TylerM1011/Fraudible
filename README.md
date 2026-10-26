@@ -2,8 +2,12 @@
 
 A native iPhone audiobook app (Swift + SwiftUI) built on free, legal, public-domain catalogues.
 
-- **Search** LibriVox and Project Gutenberg at the same time. Every result is labelled
-  **Audiobook** (human narration from LibriVox) or **Text-to-speech** (a Gutenberg ebook read aloud).
+- **Search** LibriVox, Project Gutenberg and Open Library at the same time. Every result is labelled
+  **Audiobook** (human narration from LibriVox) or **Text-to-speech** (an ebook read aloud).
+- **Scanned books from Open Library**: public-domain scans held by the Internet Archive. Downloading one saves
+  the original PDF (open it from the reader's **PDF** button, or share it from the Library's long-press menu)
+  plus its machine-read text, tidied up for reading aloud. Only freely downloadable scans are shown; lending-only
+  books are left out.
 - **Download for offline use.** Audiobook chapters are saved as MP3s; ebooks are saved as cleaned-up text.
 - **Audiobook player** with chapters, ±30s, drag-to-seek, speed control, background playback,
   lock-screen and headphone controls, and a mini player. Your position is saved automatically.
@@ -55,7 +59,7 @@ Fraudible/
     Library.swift             Library state, downloads, persisted as JSON in Application Support
     ExpoMigration.swift       One-time import of the old Expo app's library
   Services/
-    Catalog.swift             LibriVox (Internet Archive) + Gutendex API calls
+    Catalog.swift             LibriVox (Internet Archive), Gutendex and Open Library API calls
     Storage.swift             Book folders on the device, downloads with progress
     TextProcessing.swift      Text clean-up and paragraph/sentence chunking
     Importer.swift            PDF (PDFKit), EPUB (ZIPFoundation) and TXT text extraction
@@ -79,4 +83,6 @@ Fraudible/
   background, so with the screen locked Kokoro carries on from the audio it has prepared (a few minutes) and
   switches to the slower CPU; if it falls behind it pauses until you open the app again.
 - Scanned (image-only) PDFs have no text to extract, so they can't be read aloud.
+- Open Library text comes from OCR, so expect the odd misread word; Gutenberg's hand-checked text reads better
+  when a book is on both. Scanned PDFs are large (often 20–100 MB).
 - Downloads continue while the app is open; leaving the app for a long time can interrupt them (tap to retry).

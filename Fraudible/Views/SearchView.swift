@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Search LibriVox audiobooks and Gutenberg ebooks; each result says how it will be read.
+/// Search LibriVox audiobooks, Gutenberg ebooks and Open Library scans; each result says how it will be read.
 struct SearchView: View {
     @Environment(Library.self) private var library
     @Environment(AudiobookPlayer.self) private var player
@@ -8,6 +8,45 @@ struct SearchView: View {
     @Environment(\.palette) private var c
 
     private enum Filter: Hashable { case all, kind(BookKind) }
+
+    /// Each catalogue gets its own section and fills it in as soon as it answers.
+    private enum CatalogSection: CaseIterable {
+        case librivox, gutenberg, openLibrary
+
+        var kind: BookKind { self == .librivox ? .audiobook : .tts }
+
+        var title: String {
+            switch self {
+            case .librivox: "Audiobooks"
+            case .gutenberg: "Text-to-speech"
+            case .openLibrary: "Scanned books"
+            }
+        }
+
+        var note: String {
+            switch self {
+            case .librivox: "Read by human volunteers · LibriVox"
+            case .gutenberg: "Ebooks read aloud by your phone · Project Gutenberg"
+            case .openLibrary: "Original PDF scans, read aloud by your phone · Open Library"
+            }
+        }
+
+        var unreachable: String {
+            switch self {
+            case .librivox: "Couldn’t reach LibriVox right now."
+            case .gutenberg: "Couldn’t reach Project Gutenberg right now."
+            case .openLibrary: "Couldn’t reach Open Library right now."
+            }
+        }
+
+        func search(_ q: String) async throws -> [SearchResult] {
+            switch self {
+            case .librivox: try await Catalog.searchAudiobooks(q)
+            case .gutenberg: try await Catalog.searchEbooks(q)
+            case .openLibrary: try await Catalog.searchScannedBooks(q)
+            }
+        }
+    }
 
     private struct SourceState {
         var results: [SearchResult] = []
@@ -17,7 +56,7 @@ struct SearchView: View {
 
     @State private var query = ""
     @State private var filter: Filter = .all
-    @State private var sources: [BookKind: SourceState] = [:]
+    @State private var sources: [CatalogSection: SourceState] = [:]
     @State private var searched = ""
     @State private var tasks: [Task<Void, Never>] = []
     @FocusState private var fieldFocused: Bool
@@ -96,7 +135,7 @@ struct SearchView: View {
                 Text("Find something to listen to")
                     .font(.mono(22, weight: .heavy))
                     .foregroundStyle(c.text)
-                Text("Results are labelled \(Text("Audiobook").bold().foregroundStyle(c.audiobook)) (human narration) or \(Text("Text-to-speech").bold().foregroundStyle(c.tts)) (an ebook read aloud by your phone). Everything downloads for offline listening.")
+                Text("Results are labelled \(Text("Audiobook").bold().foregroundStyle(c.audiobook)) (human narration) or \(Text("Text-to-speech").bold().foregroundStyle(c.tts)) (an ebook read aloud by your phone). Scanned books from Open Library also keep the original PDF. Everything downloads for offline listening.")
                     .font(.system(size: 15))
                     .foregroundStyle(c.muted)
                     .lineSpacing(4)
@@ -112,19 +151,19 @@ struct SearchView: View {
         .scrollDismissesKeyboard(.interactively)
     }
 
-    private var visibleKinds: [BookKind] {
+    private var visibleSections: [CatalogSection] {
         switch filter {
-        case .all: [.audiobook, .tts]
-        case .kind(let kind): [kind]
+        case .all: CatalogSection.allCases
+        case .kind(let kind): CatalogSection.allCases.filter { $0.kind == kind }
         }
     }
 
     private var results: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(visibleKinds, id: \.self) { kind in
-                    sectionHeader(kind)
-                    ForEach(sources[kind]?.results ?? []) { item in
+                ForEach(visibleSections, id: \.self) { section in
+                    sectionHeader(section)
+                    ForEach(sources[section]?.results ?? []) { item in
                         ResultRow(item: item, book: library.book(forKey: item.key)) { action in
                             perform(action, on: item)
                         }
@@ -136,17 +175,15 @@ struct SearchView: View {
         .scrollDismissesKeyboard(.interactively)
     }
 
-    private func sectionHeader(_ kind: BookKind) -> some View {
-        let state = sources[kind] ?? SourceState()
-        let info: (title: String, note: String) = kind == .audiobook
-            ? ("Audiobooks", "Read by human volunteers · LibriVox")
-            : ("Text-to-speech", "Ebooks read aloud by your phone · Project Gutenberg")
+    private func sectionHeader(_ section: CatalogSection) -> some View {
+        let state = sources[section] ?? SourceState()
+        let tint = c.kind(section.kind)
         return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
-                SectionLabel(text: state.loading ? info.title : "\(info.title) · \(state.results.count)", color: c.kind(kind))
-                if state.loading { ProgressView().tint(c.kind(kind)).controlSize(.small) }
+                SectionLabel(text: state.loading ? section.title : "\(section.title) · \(state.results.count)", color: tint)
+                if state.loading { ProgressView().tint(tint).controlSize(.small) }
             }
-            Text(info.note).font(.system(size: 12)).foregroundStyle(c.faint)
+            Text(section.note).font(.system(size: 12)).foregroundStyle(c.faint)
             if let error = state.error {
                 Text(error).font(.system(size: 13)).foregroundStyle(c.danger).padding(.top, 4)
             } else if !state.loading && state.results.isEmpty {
@@ -165,21 +202,20 @@ struct SearchView: View {
         guard !q.isEmpty else { return }
         tasks.forEach { $0.cancel() }
         searched = q
-        sources = [.audiobook: SourceState(loading: true), .tts: SourceState(loading: true)]
+        sources = Dictionary(uniqueKeysWithValues: CatalogSection.allCases.map { ($0, SourceState(loading: true)) })
 
         // Each catalogue fills in its own section as soon as it answers.
-        tasks = BookKind.allCases.map { kind in
+        tasks = CatalogSection.allCases.map { section in
             Task {
                 do {
-                    let found = try await kind == .audiobook ? Catalog.searchAudiobooks(q) : Catalog.searchEbooks(q)
+                    let found = try await section.search(q)
                     guard !Task.isCancelled else { return }
-                    sources[kind] = SourceState(results: found)
+                    sources[section] = SourceState(results: found)
                 } catch {
                     guard !Task.isCancelled else { return }
-                    let base = kind == .audiobook ? "Couldn’t reach LibriVox right now." : "Couldn’t reach Project Gutenberg right now."
                     var slow = false
                     if case .timedOut? = error as? Catalog.CatalogError { slow = true }
-                    sources[kind] = SourceState(error: slow ? "\(base) It took too long to respond." : base)
+                    sources[section] = SourceState(error: slow ? "\(section.unreachable) It took too long to respond." : section.unreachable)
                 }
             }
         }
@@ -219,7 +255,12 @@ private struct ResultRow: View {
                     .font(.system(size: 13))
                     .foregroundStyle(c.muted)
                     .lineLimit(1)
-                let meta = [item.runtime.map { "\($0) long" }, item.language?.uppercased()].compactMap { $0 }
+                let meta = [
+                    item.source == .openlibrary ? "PDF scan" : nil,
+                    item.runtime.map { "\($0) long" },
+                    item.year.map(String.init),
+                    item.language?.uppercased(),
+                ].compactMap { $0 }
                 if !meta.isEmpty {
                     Text(meta.joined(separator: " · ")).font(.system(size: 12)).foregroundStyle(c.faint)
                 }

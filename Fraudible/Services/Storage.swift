@@ -80,6 +80,39 @@ nonisolated enum Storage {
         return saved
     }
 
+    /// Download an Open Library book: its scanned PDF (kept so you can view or share it) and the
+    /// scan's recognised text, cleaned up for reading aloud. If the Archive has no text file,
+    /// the text is extracted from the PDF instead.
+    @concurrent static func downloadScannedBook(bookId: String, result: SearchResult, onProgress: @escaping Progress) async throws -> (textFileName: String, paragraphs: Int, pdfFileName: String?) {
+        let scan = try await Catalog.downloadableScan(from: result.iaIdentifiers ?? [])
+        onProgress(0.03)
+
+        var text: String?
+        if let textURL = scan.textURL {
+            let data = try await Catalog.getData(textURL, accept: "text/plain")
+            text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+        }
+        onProgress(0.08)
+
+        var pdfName: String?
+        if let pdfURL = scan.pdfURL {
+            let target = fileURL(bookId: bookId, name: "book.pdf")
+            try await Downloader.download(pdfURL, to: target) { part in
+                onProgress(0.08 + part * 0.87)
+            }
+            pdfName = "book.pdf"
+            if text?.rangeOfCharacter(from: .letters) == nil {
+                text = try await Importer.extract(from: target) { _ in }.text
+            }
+        }
+        try Task.checkCancellation()
+
+        guard let text, text.rangeOfCharacter(from: .letters) != nil else { throw StorageError.noText }
+        let saved = try saveBookText(bookId: bookId, text: TextProcessing.cleanOCR(text))
+        onProgress(1)
+        return (saved.fileName, saved.paragraphs, pdfName)
+    }
+
     /// Save a cover image next to the book so it shows offline. Best-effort.
     static func downloadCover(bookId: String, from url: URL?) async -> String? {
         guard let url else { return nil }

@@ -32,6 +32,8 @@ nonisolated enum Catalog {
     static func getData(_ url: URL, accept: String = "application/json") async throws -> Data {
         var request = URLRequest(url: url)
         request.setValue(accept, forHTTPHeaderField: "Accept")
+        // Open Library asks apps using its API to identify themselves.
+        request.setValue("Fraudible/2.0 (iOS audiobook app)", forHTTPHeaderField: "User-Agent")
         do {
             let (data, response) = try await session.data(for: request)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
@@ -52,6 +54,7 @@ nonisolated enum Catalog {
             let c = try decoder.singleValueContainer()
             if let s = try? c.decode(String.self) { first = s }
             else if let a = try? c.decode([String].self) { first = a.first }
+            else if let b = try? c.decode(Bool.self) { first = b ? "true" : "false" }
             else if let n = try? c.decode(Double.self) { first = String(n) }
             else { first = nil }
         }
@@ -141,7 +144,9 @@ nonisolated enum Catalog {
             let title: String?
             let track: String?
             let length: String?
+            let size: String?
         }
+        let metadata: [String: StringOrArray]?
         let files: [File]?
     }
 
@@ -239,5 +244,110 @@ nonisolated enum Catalog {
                     formats: b.formats
                 )
             }
+    }
+
+    // MARK: - Open Library scans (text-to-speech, with the original PDF)
+
+    nonisolated struct OpenLibraryResponse: Decodable {
+        nonisolated struct Doc: Decodable {
+            let key: String
+            let title: String?
+            let author_name: [String]?
+            let cover_i: Int?
+            let ia: [String]?
+            let first_publish_year: Int?
+            let language: [String]?
+        }
+        let docs: [Doc]
+    }
+
+    /// Open Library uses MARC language codes ("eng"); show the familiar two-letter ones.
+    private static let marcLanguages: [String: String] = [
+        "eng": "en", "fre": "fr", "ger": "de", "spa": "es", "ita": "it", "dut": "nl",
+        "por": "pt", "rus": "ru", "chi": "zh", "jpn": "ja", "lat": "la", "gre": "el",
+    ]
+
+    /// Search Open Library for books with a freely downloadable public-domain scan.
+    /// `public_scan=true` excludes lending-only books, which can't be downloaded.
+    static func searchScannedBooks(_ query: String) async throws -> [SearchResult] {
+        let q = cleanQuery(query)
+        guard !q.isEmpty else { return [] }
+        var components = URLComponents(string: "https://openlibrary.org/search.json")!
+        components.queryItems = [
+            URLQueryItem(name: "q", value: q),
+            URLQueryItem(name: "public_scan", value: "true"),
+            URLQueryItem(name: "fields", value: "key,title,author_name,cover_i,ia,first_publish_year,language"),
+            URLQueryItem(name: "limit", value: "25"),
+        ]
+        let decoded = try JSONDecoder().decode(OpenLibraryResponse.self, from: try await getData(components.url!))
+
+        return decoded.docs.compactMap { d in
+            guard let ia = d.ia, !ia.isEmpty else { return nil }
+            let olid = d.key.split(separator: "/").last.map(String.init) ?? d.key
+            let languages = d.language ?? []
+            // Prefer English when a work has editions in several languages.
+            let code = languages.contains("eng") ? "eng" : languages.first
+            return SearchResult(
+                key: "openlibrary:\(olid)",
+                kind: .tts,
+                source: .openlibrary,
+                sourceId: d.key,
+                title: d.title ?? "Untitled",
+                author: d.author_name?.prefix(2).joined(separator: ", ") ?? "Unknown",
+                coverURL: d.cover_i.flatMap { URL(string: "https://covers.openlibrary.org/b/id/\($0)-M.jpg") },
+                language: code.map { marcLanguages[$0] ?? String($0.prefix(2)) },
+                iaIdentifiers: Array(ia.prefix(8)),
+                year: d.first_publish_year
+            )
+        }
+    }
+
+    /// A scanned book on the Internet Archive that anyone may download.
+    nonisolated struct ArchiveScan: Sendable {
+        let identifier: String
+        let pdfURL: URL?
+        let textURL: URL?
+        let pdfBytes: Int64?
+    }
+
+    nonisolated enum ScanError: LocalizedError {
+        case noDownloadableScan
+        var errorDescription: String? {
+            "This book’s scans are lending-only on the Internet Archive, so they can’t be downloaded"
+        }
+    }
+
+    /// Of a work's Internet Archive scans, find the first that is freely downloadable
+    /// (not lending-restricted) and has a PDF or its recognised text.
+    static func downloadableScan(from identifiers: [String]) async throws -> ArchiveScan {
+        for identifier in identifiers {
+            try Task.checkCancellation()
+            let url = archive.appendingPathComponent("metadata").appendingPathComponent(identifier)
+            guard let data = try? await getData(url),
+                  let meta = try? JSONDecoder().decode(ArchiveMetadata.self, from: data),
+                  let files = meta.files, !files.isEmpty else { continue }
+            if meta.metadata?["access-restricted-item"]?.first == "true" { continue }
+
+            // Lending copies come as encrypted PDFs; only plain ones can be read.
+            let pdfs = files.filter { f in
+                let format = f.format ?? ""
+                return f.name.lowercased().hasSuffix(".pdf") && !format.localizedCaseInsensitiveContains("encrypted")
+            }
+            let pdf = pdfs.first { $0.format == "Text PDF" } ?? pdfs.first { $0.format == "Image Container PDF" } ?? pdfs.first
+            let text = files.first { $0.format == "DjVuTXT" } ?? files.first { $0.name.hasSuffix("_djvu.txt") }
+            guard pdf != nil || text != nil else { continue }
+
+            func fileURL(_ name: String) -> URL? {
+                let path = name.split(separator: "/").map { encodeComponent(String($0)) }.joined(separator: "/")
+                return URL(string: "https://archive.org/download/\(encodeComponent(identifier))/\(path)")
+            }
+            return ArchiveScan(
+                identifier: identifier,
+                pdfURL: pdf.flatMap { fileURL($0.name) },
+                textURL: text.flatMap { fileURL($0.name) },
+                pdfBytes: pdf?.size.flatMap { Int64($0) }
+            )
+        }
+        throw ScanError.noDownloadableScan
     }
 }

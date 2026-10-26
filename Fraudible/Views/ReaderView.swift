@@ -1,3 +1,4 @@
+import PDFKit
 import SwiftUI
 
 /// Reads an ebook aloud with Apple's built-in voices or Kokoro, highlighting each paragraph.
@@ -9,6 +10,7 @@ struct ReaderView: View {
     @Environment(\.palette) private var c
     @State private var session: ReaderSession?
     @State private var showVoices = false
+    @State private var showPDF = false
 
     var body: some View {
         Group {
@@ -28,6 +30,22 @@ struct ReaderView: View {
         .navigationTitle(library.book(bookID)?.title ?? "Reader")
         .navigationBarTitleDisplayMode(.inline)
         .retroNavigation(c)
+        .toolbar {
+            if library.book(bookID)?.pdfFileURL != nil {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("PDF") { showPDF = true }
+                        .font(.mono(14))
+                        .tint(c.accent)
+                        .accessibilityLabel("View the original PDF")
+                }
+            }
+        }
+        .sheet(isPresented: $showPDF) {
+            if let book = library.book(bookID), let url = book.pdfFileURL {
+                PDFSheet(url: url, title: book.title)
+                    .environment(\.palette, c)
+            }
+        }
         .onAppear {
             if session == nil, let book = library.book(bookID) {
                 session = ReaderSession(book: book, library: library, kokoro: kokoro)
@@ -323,5 +341,51 @@ private struct VoicePicker: View {
         }
         .buttonStyle(.plain)
         .listRowBackground(c.surfaceHigh)
+    }
+}
+
+/// The original scanned PDF of an Open Library book, with a button to share or save it.
+/// Reading aloud carries on while it's open.
+private struct PDFSheet: View {
+    let url: URL
+    let title: String
+    @Environment(\.palette) private var c
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            PDFKitView(url: url)
+                .ignoresSafeArea(edges: .bottom)
+                .navigationTitle(title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Done") { dismiss() }.tint(c.text)
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        ShareLink(item: url) { Image(systemName: "square.and.arrow.up") }
+                            .tint(c.accent)
+                            .accessibilityLabel("Share PDF")
+                    }
+                }
+                .retroNavigation(c)
+        }
+    }
+}
+
+private struct PDFKitView: UIViewRepresentable {
+    let url: URL
+
+    func makeUIView(context: Context) -> PDFView {
+        let view = PDFView()
+        view.autoScales = true
+        view.displayMode = .singlePageContinuous
+        view.displayDirection = .vertical
+        view.document = PDFDocument(url: url)
+        return view
+    }
+
+    func updateUIView(_ view: PDFView, context: Context) {
+        if view.document?.documentURL != url { view.document = PDFDocument(url: url) }
     }
 }

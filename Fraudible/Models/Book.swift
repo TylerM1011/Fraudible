@@ -17,6 +17,8 @@ nonisolated enum BookKind: String, Codable, Hashable, CaseIterable, Sendable {
 nonisolated enum BookSource: String, Codable, Hashable, Sendable {
     case librivox
     case gutenberg
+    /// Public-domain scans found through Open Library and downloaded from the Internet Archive.
+    case openlibrary
     case `import`
 }
 
@@ -26,7 +28,7 @@ nonisolated struct SearchResult: Codable, Hashable, Identifiable, Sendable {
     var key: String
     var kind: BookKind
     var source: BookSource
-    /// Internet Archive identifier (LibriVox) or Gutenberg book id.
+    /// Internet Archive identifier (LibriVox), Gutenberg book id, or Open Library work key.
     var sourceId: String
     var title: String
     var author: String
@@ -38,6 +40,11 @@ nonisolated struct SearchResult: Codable, Hashable, Identifiable, Sendable {
     var downloads: Int?
     /// Gutenberg only: the URLs of the formats on offer, keyed by MIME type.
     var formats: [String: String]?
+    /// Open Library only: Internet Archive scans of this work. Some may be lending-only;
+    /// the download picks the first one that is freely downloadable.
+    var iaIdentifiers: [String]?
+    /// Open Library only: year of first publication.
+    var year: Int?
 
     var id: String { key }
 }
@@ -89,6 +96,8 @@ nonisolated struct LibraryBook: Codable, Hashable, Identifiable, Sendable {
     // Text-to-speech books
     /// File name of the cleaned plain text inside the book's folder.
     var textFileName: String?
+    /// File name of the original scanned PDF, for Open Library books.
+    var pdfFileName: String?
     /// Index of the paragraph the reader was on.
     var ttsPosition: Int?
     /// Index of the exact chunk the reader last played, so a long paragraph resumes

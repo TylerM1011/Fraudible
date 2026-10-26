@@ -132,6 +132,9 @@ struct LibraryView: View {
         if book.status == .downloading {
             Button("Cancel download") { library.cancel(book.id) }
         }
+        if let pdf = book.pdfFileURL {
+            ShareLink(item: pdf) { Label("Share PDF", systemImage: "square.and.arrow.up") }
+        }
         Button("Delete from device", role: .destructive) { pendingDelete = book }
     }
 
@@ -238,6 +241,7 @@ private struct LibraryRow: View {
         }
         let total = book.ttsParagraphs ?? 0
         let at = book.ttsPosition ?? 0
-        return total > 0 ? "\(Int(Double(at) / Double(total) * 100))% read" : "Ready"
+        let read = total > 0 ? "\(Int(Double(at) / Double(total) * 100))% read" : "Ready"
+        return book.pdfFileName != nil ? "\(read) · PDF saved" : read
     }
 }
