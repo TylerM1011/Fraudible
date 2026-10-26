@@ -1,75 +1,82 @@
 # Fraudible
 
-A React Native (Expo SDK 57) audiobook app built on free, legal, public-domain catalogues.
+A native iPhone audiobook app (Swift + SwiftUI) built on free, legal, public-domain catalogues.
 
 - **Search** LibriVox and Project Gutenberg at the same time. Every result is labelled
-  **Audiobook** (human narration from LibriVox) or **Text-to-speech** (a Gutenberg ebook read aloud by an AI voice).
+  **Audiobook** (human narration from LibriVox) or **Text-to-speech** (a Gutenberg ebook read aloud).
 - **Download for offline use.** Audiobook chapters are saved as MP3s; ebooks are saved as cleaned-up text.
-- **Audiobook player** with chapters, ±30s, tap-to-seek, speed control, background playback,
-  lock-screen controls and a mini player. Your position is saved automatically.
-- **Kokoro reader**: ebooks are read aloud by [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M), a natural-sounding
-  open-source neural voice that runs entirely on the phone (via `react-native-executorch`). Paragraph highlighting,
-  tap-to-jump, speed control, British and American voices. It remembers where you stopped.
-- **Import your own** PDF, EPUB or TXT files and have them read aloud.
-- **Torrent link** for LibriVox audiobooks (the Internet Archive publishes one per item), via the "Torrent" button in the player.
+- **Audiobook player** with chapters, ±30s, drag-to-seek, speed control, background playback,
+  lock-screen and headphone controls, and a mini player. Your position is saved automatically.
+- **Reader** for ebooks, with paragraph highlighting, tap-to-jump, speed control and two kinds of voice:
+  - **Apple voices**: built in, nothing to download, start instantly. Better-sounding *Enhanced* and *Premium*
+    versions can be downloaded in Settings › Accessibility › Spoken Content › Voices › English.
+  - **Kokoro**: a natural-sounding open-source neural voice ([Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M))
+    that runs entirely on the phone via [KokoroSwift](https://github.com/mlalma/kokoro-ios) and Apple's MLX.
+    One-time download of about 330 MB, offered in the reader. British and American voices.
+- **Import your own** PDF, EPUB or TXT files and have them read aloud. Extraction happens on the phone (PDFKit and a
+  small EPUB reader), so no connection is needed.
+- **Torrent link** for LibriVox audiobooks (the Internet Archive publishes one per item), via "Torrent" in the player.
 
 ## Requirements
 
-- **A development build, not Expo Go.** Kokoro needs native code that Expo Go doesn't include.
-- iPhone on **iOS 17 or later** (Android 13+ also supported).
-- To build on your Mac: **Xcode** from the Mac App Store, plus its command-line tools.
+- **Xcode 26 or later** on a Mac.
+- iPhone or iPad on **iOS 18 or later**.
+- Kokoro needs a **real device**: MLX uses the GPU, which the Simulator doesn't provide. In the Simulator the
+  reader uses Apple voices only; everything else works.
 
 ## Run it
 
-```bash
-cd ~/dev/Fraudible
-npm install
-npx expo run:ios --device     # builds and installs on your iPhone (connected by USB, or on the same Wi-Fi)
-```
+1. Open `Fraudible.xcodeproj` in Xcode.
+2. Wait for Xcode to fetch the Swift packages (KokoroSwift, MLX, MisakiSwift, MLXUtilsLibrary, ZIPFoundation).
+   The first time takes a few minutes.
+3. Pick your iPhone as the run destination and press **Run** (⌘R).
 
-The first build takes a while (10–20 minutes). After that, day-to-day work is the same as Expo Go:
+Signing uses your team (`49ALN9FV5Q`) and the same bundle id as the old Expo app, `com.tyler.fraudible`.
+If Xcode complains about signing, open the **Fraudible** target › *Signing & Capabilities* and pick your team.
 
-```bash
-npx expo start                # then open the Fraudible app on your phone
-```
+Use the **Release** configuration (Product › Scheme › Edit Scheme › Run › Build Configuration) when trying Kokoro:
+debug builds of MLX are several times slower.
 
-Only rebuild (`npx expo run:ios`) after adding or upgrading a package with native code.
+### Coming from the Expo version
 
-No Xcode? Build in the cloud instead (needs a free Expo account; installing on a real iPhone needs an Apple Developer account):
-
-```bash
-npx eas-cli@latest build --profile development --platform ios
-```
+Installing over the old app keeps your downloads. On first launch the Swift app reads the old library
+(from React Native's AsyncStorage) and carries over every book, chapter position and reading position.
+The old Kokoro voice download isn't reusable, so Kokoro needs downloading once more.
 
 ## Project layout
 
 ```
-src/
-  app/                      Expo Router screens
-    (tabs)/index.tsx        Search
-    (tabs)/library.tsx      Library + import
-    listen/[id].tsx         Audiobook player
-    read/[id].tsx           Kokoro reader
-  components/
-    ImportExtractor.tsx     Hidden WebView running pdf.js / JSZip to pull text from PDFs and EPUBs
-    MiniPlayer.tsx, ui.tsx
-  lib/
-    catalog.ts              LibriVox (Internet Archive) + Gutendex API calls
-    storage.ts              Downloads and on-device files
-    library.tsx             Library state, persisted with AsyncStorage
-    player.tsx              App-wide audiobook player
-    kokoro.tsx              Kokoro voice download, loading and voice list
-    wav.ts                  Turns Kokoro's audio into WAV files for playback
-    audioFocus.ts           Stops the reader when an audiobook starts (and vice versa)
-    text.ts                 Text clean-up and paragraph chunking
+Fraudible.xcodeproj
+Fraudible-Info.plist          Background audio mode
+Fraudible/
+  FraudibleApp.swift          App entry, router (tabs, navigation, player sheet), theme
+  Models/
+    Book.swift                SearchResult, LibraryBook, Track…
+    Library.swift             Library state, downloads, persisted as JSON in Application Support
+    ExpoMigration.swift       One-time import of the old Expo app's library
+  Services/
+    Catalog.swift             LibriVox (Internet Archive) + Gutendex API calls
+    Storage.swift             Book folders on the device, downloads with progress
+    TextProcessing.swift      Text clean-up and paragraph/sentence chunking
+    Importer.swift            PDF (PDFKit), EPUB (ZIPFoundation) and TXT text extraction
+  Audio/
+    AudiobookPlayer.swift     App-wide AVPlayer: chapters, speed, saved positions
+    AudioFocus.swift          Audiobook and reader stop each other; lock-screen controls
+  Speech/
+    ReaderSession.swift       Drives reading aloud for one book
+    SpeechBackends.swift      Apple (AVSpeechSynthesizer) and Kokoro (AVAudioEngine) playback
+    Kokoro.swift              Kokoro model download, loading and synthesis
+    Voices.swift              Voice lists and defaults
+  Views/                      SwiftUI screens and the retro components
+  Resources/voices.npz        Kokoro voice styles (from KokoroTestApp, Apache 2.0)
 ```
 
 ## Good to know
 
 - The catalogue is public-domain books (mostly published before ~1930), so expect classics rather than new releases.
-- The Kokoro voice is a **one-time download of about 330 MB**, offered the first time you open a text-to-speech book.
-  British and American voices are separate packs that share the big model file, so the second is a small extra download.
-- Kokoro works best on recent phones and uses more battery than the built-in phone voices. It prepares audio a couple of
-  paragraphs ahead, so there's a short "Preparing audio…" pause when you start or jump.
-- Importing a PDF or EPUB needs an internet connection the first time, to load the PDF/EPUB reader library. After that the book is stored offline.
+- Kokoro prepares audio a few sentences ahead, so there's a short "Preparing audio…" pause when you start or jump.
+  It works best on recent iPhones and uses more battery than Apple's voices. iOS restricts GPU work in the
+  background, so with the screen locked Kokoro carries on from the audio it has prepared (a few minutes) and
+  switches to the slower CPU; if it falls behind it pauses until you open the app again.
 - Scanned (image-only) PDFs have no text to extract, so they can't be read aloud.
+- Downloads continue while the app is open; leaving the app for a long time can interrupt them (tap to retry).

@@ -1,41 +1,24 @@
-This is an Expo/React Native mobile application. Prioritize mobile-first patterns, performance, and cross-platform compatibility.
+This is a native iOS app written in Swift and SwiftUI (no Expo or React Native). Target: iOS 18+, built with Xcode 26 or later.
 
-## Expo has changed — do not trust your training data
+## Project
 
-Expo ships breaking changes every SDK release. APIs you remember are likely renamed, moved, or removed. Before writing any code that touches an Expo, EAS, or React Native API:
+- Open `Fraudible.xcodeproj`. The `Fraudible/` folder is a synchronized group: any file added there is part of the app target automatically; no project-file edits needed for new sources or resources.
+- Swift packages: KokoroSwift (`mlalma/kokoro-ios`, an embedded dynamic framework that brings in MLX and MisakiSwift), MLXUtilsLibrary, ZIPFoundation.
+- Build settings follow the Xcode 26 template: Swift 5 language mode, `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, approachable concurrency. Types are main-actor by default; anything used off the main thread (data models, parsers, the Kokoro engine) is declared `nonisolated`, and CPU-heavy async functions are `@concurrent` or run in `Task.detached`.
+- Background audio is enabled in `Fraudible-Info.plist` (`UIBackgroundModes: audio`).
 
-1. Read the major version of the `expo` package in `package.json`.
-2. Fetch the matching versioned docs: `https://docs.expo.dev/versions/v<major>.0.0/`
-3. For anything else, fetch https://docs.expo.dev/llms.txt — an index of all Expo docs with corrections to common LLM misconceptions. Follow its links to the specific page you need; never answer from memory.
+## Conventions
+
+- State lives in `@Observable` classes injected with `.environment(...)`: `Library`, `AudiobookPlayer`, `KokoroManager`, `AppRouter`.
+- The library stores file *names*, never absolute paths; resolve them with `Storage.bookDir(_:)`.
+- Colours come from `@Environment(\.palette)`; headings use `Font.mono(_:weight:)`.
+- Kokoro (MLX) needs a real device; guard Simulator-only paths with `KokoroManager.isSupported`.
 
 ## Commands
 
-Use `bunx` instead of `npx` if the project uses bun (`bun.lock` present).
-
 ```bash
-npx expo install <package>  # ALWAYS use instead of npm/yarn/pnpm/bun add — resolves SDK-compatible versions
-npx expo start              # start the dev server
-npx expo lint               # lint
-npx tsc --noEmit            # typecheck
-npx expo-doctor             # diagnose dependency and config issues
-npx expo install --fix      # fix incompatible package versions
+xcodebuild -project Fraudible.xcodeproj -scheme Fraudible -destination 'generic/platform=iOS' build
+xcodebuild -project Fraudible.xcodeproj -scheme Fraudible -destination 'platform=iOS Simulator,name=iPhone 16' build
 ```
 
-Run lint and typecheck before declaring any task done.
-
-## Navigation & Routing
-
-- Use **Expo Router** for all navigation. Routes live in `src/app/` — every file there is a screen, `_layout.tsx` files define navigators. Keep non-route code (components, hooks, utils) outside `src/app/`.
-- Import `Link`, `router`, and `useLocalSearchParams` from `expo-router`.
-- Docs: https://docs.expo.dev/router/introduction.md
-
-## Building with EAS
-
-Use EAS to build, sign, and submit the app in the cloud (`eas build`, `eas submit`) and to ship over-the-air updates (`eas update`) — no local Xcode or Android Studio required. Run EAS CLI as `bunx eas-cli <command>` in Bun projects, or `npx eas-cli@latest <command>` otherwise; substitute that for bare `eas` in docs examples.
-Docs: https://docs.expo.dev/eas/index.md
-
-## Rules
-
-- If `ios/` and `android/` directories do not exist, they are generated (Continuous Native Generation). Never create or edit them by hand — configure native behavior in `app.json` and config plugins.
-- Expo Go only includes its bundled native modules. After adding a library with native code, the app needs a development build: `npx expo run:ios|android` locally, or `eas build --profile development`.
-- Prefer recommended Expo modules over third-party libraries, and check your available skills before adding dependencies. Docs: https://docs.expo.dev/versions/latest/index.md
+Build before declaring a task done.
