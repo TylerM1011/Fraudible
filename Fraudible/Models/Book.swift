@@ -103,6 +103,8 @@ nonisolated struct LibraryBook: Codable, Hashable, Identifiable, Sendable {
     /// Index of the exact chunk the reader last played, so a long paragraph resumes
     /// where it stopped instead of restarting from its first sentence.
     var ttsChunkPosition: Int?
+    /// Where in that paragraph reading paused (UTF-16 offset of the word), so it resumes on that word.
+    var ttsWordOffset: Int?
     /// Total paragraph count, for showing progress in the library.
     var ttsParagraphs: Int?
     var ttsRate: Double?

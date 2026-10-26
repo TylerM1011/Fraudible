@@ -223,6 +223,9 @@ private struct ReaderContent: View {
 
     private var statusLine: String {
         let count = session.paragraphs.map { String($0.count) } ?? "…"
+        if let word = session.pausedWord {
+            return "Paused on “\(word)” · tap play to continue from here"
+        }
         let prefix = session.reading && session.buffering ? "Preparing audio · " : ""
         return "\(prefix)\(session.voice.name) · Paragraph \(session.index + 1) of \(count) · \(Int(session.progress * 100))%"
     }

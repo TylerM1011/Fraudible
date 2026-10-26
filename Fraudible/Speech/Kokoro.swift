@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UIKit
 import KokoroSwift
 import MLX
 import MLXUtilsLibrary
@@ -43,6 +44,16 @@ final class KokoroManager {
 
     init() {
         isDownloaded = Self.isSupported && Self.modelIsComplete()
+        // iOS terminates apps that use the GPU in the background. Switch Kokoro to the CPU as
+        // soon as the app starts to leave the screen (waiting for any sentence already on the
+        // GPU to finish), and back once it's active again.
+        let kokoroEngine = self.engine
+        NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
+            kokoroEngine.setGPUAllowed(false)
+        }
+        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            kokoroEngine.setGPUAllowed(true)
+        }
     }
 
     private static func modelIsComplete() -> Bool {
@@ -156,6 +167,31 @@ nonisolated final class KokoroEngine: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.tyler.fraudible.kokoro", qos: .userInitiated)
     private var tts: KokoroTTS?
     private var voices: [String: MLXArray] = [:]
+    /// Held while a piece is being synthesized on the GPU.
+    private let gpuGate = NSLock()
+    private let flagLock = NSLock()
+    private var gpuAllowedFlag = true
+
+    /// Called on the main thread as the app leaves / returns to the foreground. Turning the GPU
+    /// off waits for any piece already running on it, so nothing reaches the GPU once in background.
+    func setGPUAllowed(_ allowed: Bool) {
+        flagLock.withLock { gpuAllowedFlag = allowed }
+        Log.kokoro.info("GPU \(allowed ? "allowed" : "off (app inactive)", privacy: .public)")
+        if !allowed {
+            gpuGate.lock()
+            gpuGate.unlock()
+        }
+    }
+
+    /// Run one piece on the GPU if the app is in the foreground, otherwise on the CPU.
+    private func onBestDevice<T>(preferCPU: Bool, _ body: () throws -> T) throws -> T {
+        gpuGate.lock()
+        let allowed = flagLock.withLock { gpuAllowedFlag }
+        let onGPU = allowed && !preferCPU
+        if !onGPU { gpuGate.unlock() }
+        defer { if onGPU { gpuGate.unlock() } }
+        return try Device.withDefaultDevice(onGPU ? Device.gpu : Device.cpu) { try body() }
+    }
 
     func load(modelFile: URL) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -201,7 +237,7 @@ nonisolated final class KokoroEngine: @unchecked Sendable {
                     var words: [WordTiming] = []
                     var pieceSearch = text.startIndex
                     for piece in TextProcessing.kokoroPieces(text) {
-                        let (audio, tokens) = try Device.withDefaultDevice(useCPU ? Device.cpu : Device.gpu) {
+                        let (audio, tokens) = try self.onBestDevice(preferCPU: useCPU) {
                             try self.generate(tts, style: style, language: language, text: piece)
                         }
                         // Where this piece sits in the chunk, so word ranges can be made chunk-relative.

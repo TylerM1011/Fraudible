@@ -13,12 +13,17 @@ protocol SpeechBackend: AnyObject {
     var onBuffering: ((Bool) -> Void)? { get set }
     var onError: ((String) -> Void)? { get set }
 
-    /// Start speaking from `index`, interrupting anything already playing.
-    func play(from index: Int)
+    /// Start speaking chunk `index`, beginning at the word that starts at UTF-16 offset
+    /// `wordOffset` in its text (0 = the start), interrupting anything already playing.
+    func play(from index: Int, at wordOffset: Int)
+    /// Stop on the current word. Resuming is `play(from:at:)` with that word.
     func pause()
-    func resume()
     func stop()
     func setRate(_ rate: Double)
+}
+
+extension SpeechBackend {
+    func play(from index: Int) { play(from: index, at: 0) }
 }
 
 // MARK: - Apple voices
@@ -36,8 +41,11 @@ final class AppleSpeechBackend: SpeechBackend {
     private var rate: Double
     private let synthesizer = AVSpeechSynthesizer()
     private let relay = SpeechDelegateRelay()
-    /// The utterance currently speaking, and the chunk it belongs to.
-    private var current: (id: ObjectIdentifier, index: Int)?
+    /// The utterance currently speaking, the chunk it belongs to, and where in the chunk's
+    /// text it starts (an utterance can begin mid-chunk when resuming on a word).
+    private var current: (id: ObjectIdentifier, index: Int, base: Int)?
+    /// The chunk-relative offset of the word being spoken, so a speed change restarts there.
+    private var lastWordOffset = 0
 
     init(chunks: [Chunk], voiceIdentifier: String, rate: Double) {
         self.chunks = chunks
@@ -48,23 +56,22 @@ final class AppleSpeechBackend: SpeechBackend {
         relay.onFinish = { [weak self] id in self?.utteranceFinished(id) }
         relay.onWord = { [weak self] id, range in
             guard let self, let current = self.current, current.id == id else { return }
-            self.onWord?(range)
+            let chunkRange = (current.base + range.lowerBound)..<(current.base + range.upperBound)
+            self.lastWordOffset = chunkRange.lowerBound
+            self.onWord?(chunkRange)
         }
     }
 
-    func play(from index: Int) {
+    func play(from index: Int, at wordOffset: Int) {
         current = nil
         if synthesizer.isSpeaking { synthesizer.stopSpeaking(at: .immediate) }
-        speak(index)
+        speak(index, at: wordOffset)
     }
 
+    /// Cut off immediately; resuming speaks again from the highlighted word.
     func pause() {
-        synthesizer.pauseSpeaking(at: .immediate)
-    }
-
-    func resume() {
-        if synthesizer.isPaused { synthesizer.continueSpeaking() }
-        else if let current { speak(current.index) }
+        current = nil
+        synthesizer.stopSpeaking(at: .immediate)
     }
 
     func stop() {
@@ -75,23 +82,27 @@ final class AppleSpeechBackend: SpeechBackend {
     /// Takes effect immediately by restarting the current chunk at the new speed.
     func setRate(_ rate: Double) {
         self.rate = rate
-        guard let current, synthesizer.isSpeaking, !synthesizer.isPaused else { return }
-        play(from: current.index)
+        guard let current, synthesizer.isSpeaking else { return }
+        play(from: current.index, at: lastWordOffset)
     }
 
-    private func speak(_ index: Int) {
+    private func speak(_ index: Int, at wordOffset: Int = 0) {
         guard index < chunks.count else {
             current = nil
             onFinish?()
             return
         }
-        Log.reader.info("apple: speak chunk \(index, privacy: .public) voice=\(self.voice?.identifier ?? "default", privacy: .public)")
-        let utterance = AVSpeechUtterance(string: chunks[index].text)
+        let text = chunks[index].text
+        let base = min(max(0, wordOffset), text.utf16.count)
+        let start = String.Index(utf16Offset: base, in: text)
+        Log.reader.info("apple: speak chunk \(index, privacy: .public) at \(base, privacy: .public) voice=\(self.voice?.identifier ?? "default", privacy: .public)")
+        let utterance = AVSpeechUtterance(string: String(text[start...]))
         utterance.voice = voice
         utterance.rate = Self.utteranceRate(rate)
         let nextIsNewParagraph = index + 1 < chunks.count && chunks[index + 1].paragraph != chunks[index].paragraph
         utterance.postUtteranceDelay = nextIsNewParagraph ? 0.35 : 0.05
-        current = (ObjectIdentifier(utterance), index)
+        current = (ObjectIdentifier(utterance), index, base)
+        lastWordOffset = base
         synthesizer.speak(utterance)
         onChunkStart?(index)
     }
@@ -172,6 +183,10 @@ final class KokoroSpeechBackend: SpeechBackend {
     /// The player's sample time when the current chunk started, and the last word reported.
     private var chunkStartSample: AVAudioFramePosition = 0
     private var lastWord: Range<Int>?
+    /// Where to start in the chunk about to play (a word's UTF-16 offset), when resuming mid-chunk.
+    private var startWordOffset = 0
+    /// How far into the chunk's audio the scheduled buffer starts, in seconds.
+    private var chunkTimeOffset: Double = 0
 
     init(chunks: [Chunk], engine: KokoroEngine, voiceID: String, rate: Double) {
         self.chunks = chunks
@@ -187,7 +202,7 @@ final class KokoroSpeechBackend: SpeechBackend {
         configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: audioEngine, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.active, !self.paused, !self.waiting else { return }
-                self.play(from: self.position)
+                self.play(from: self.position, at: self.lastWord?.lowerBound ?? 0)
             }
         }
         // If synthesis had to pause while the app was in the background, pick it up again.
@@ -196,39 +211,29 @@ final class KokoroSpeechBackend: SpeechBackend {
         }
     }
 
-    func play(from index: Int) {
-        Log.reader.info("kokoro backend: play from \(index, privacy: .public)")
+    func play(from index: Int, at wordOffset: Int) {
+        Log.reader.info("kokoro backend: play from \(index, privacy: .public) at \(wordOffset, privacy: .public)")
         playToken += 1
         playerNode.stop()
         scheduled = nil
         active = true
         paused = false
         position = index
+        startWordOffset = max(0, wordOffset)
         buffers = buffers.filter { $0.key >= index - 1 && $0.key <= index + Self.lookahead }
         words = words.filter { buffers[$0.key] != nil }
         startBuilder()
         playCurrent()
     }
 
+    /// Stop on the current word. The synthesized audio is kept, so resuming on that word is instant.
     func pause() {
         Log.reader.info("kokoro backend: pause")
         paused = true
-        playerNode.pause()
+        playToken += 1
+        scheduled = nil
         stopWordTimer()
-    }
-
-    func resume() {
-        guard active else { return }
-        paused = false
-        if !audioEngine.isRunning {
-            // The engine was stopped (interruption, route change): start the chunk again.
-            play(from: position)
-        } else if scheduled == position {
-            playerNode.play()
-            startWordTimer()
-        } else {
-            playCurrent()
-        }
+        playerNode.stop()
     }
 
     func stop() {
@@ -288,10 +293,15 @@ final class KokoroSpeechBackend: SpeechBackend {
         }
         let token = playToken
         let index = position
+        // Resuming mid-chunk: play from just before the word, and offset word tracking to match.
+        let skip = startWordOffset > 0 ? startTime(forWordAt: startWordOffset, in: index, duration: Double(buffer.frameLength) / KokoroEngine.sampleRate) : 0
+        startWordOffset = 0
+        chunkTimeOffset = skip
+        let toPlay = skip > 0 ? tail(of: buffer, from: skip) : buffer
         chunkStartSample = currentSampleTime() ?? 0
         lastWord = nil
         scheduled = index
-        playerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack, completionHandler: onMainActor { [weak self] in
+        playerNode.scheduleBuffer(toPlay, completionCallbackType: .dataPlayedBack, completionHandler: onMainActor { [weak self] in
             self?.chunkFinished(token: token, index: index)
         })
         playerNode.play()
@@ -332,10 +342,35 @@ final class KokoroSpeechBackend: SpeechBackend {
     private func reportWord() {
         guard let index = scheduled, let timings = words[index], !timings.isEmpty,
               let now = currentSampleTime() else { return }
-        let seconds = Double(now - chunkStartSample) / KokoroEngine.sampleRate
+        let seconds = chunkTimeOffset + Double(now - chunkStartSample) / KokoroEngine.sampleRate
         guard let word = timings.last(where: { $0.start <= seconds }), word.range != lastWord else { return }
         lastWord = word.range
         onWord?(word.range)
+    }
+
+    /// When the word at `offset` starts in a chunk's audio. Without word timings (rare), estimate
+    /// from how far through the text it is.
+    private func startTime(forWordAt offset: Int, in index: Int, duration: Double) -> Double {
+        if let timings = words[index], let word = timings.first(where: { $0.range.upperBound > offset }) {
+            return min(duration, max(0, word.start - 0.05))
+        }
+        let length = max(1, chunks[index].text.utf16.count)
+        return min(duration, duration * Double(offset) / Double(length))
+    }
+
+    /// A copy of the buffer starting `seconds` in.
+    private func tail(of buffer: AVAudioPCMBuffer, from seconds: Double) -> AVAudioPCMBuffer {
+        let skip = min(Int(buffer.frameLength), Int(seconds * KokoroEngine.sampleRate))
+        let count = max(1, Int(buffer.frameLength) - skip)
+        let out = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count))!
+        out.frameLength = out.frameCapacity
+        let available = Int(buffer.frameLength) - skip
+        if available > 0 {
+            out.floatChannelData![0].update(from: buffer.floatChannelData![0] + skip, count: available)
+        } else {
+            out.floatChannelData![0][0] = 0
+        }
+        return out
     }
 
     // MARK: Building
