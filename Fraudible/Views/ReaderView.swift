@@ -2,12 +2,12 @@ import PDFKit
 import SwiftUI
 
 /// Reads an ebook aloud with Apple's built-in voices or Kokoro, highlighting each paragraph.
+/// The text fills the screen; the controls float over it on a Liquid Glass bar.
 struct ReaderView: View {
     let bookID: String
     @Environment(Library.self) private var library
     @Environment(KokoroManager.self) private var kokoro
     @Environment(AppRouter.self) private var router
-    @Environment(\.palette) private var c
     @State private var session: ReaderSession?
     @State private var showVoices = false
     @State private var showPDF = false
@@ -21,29 +21,34 @@ struct ReaderView: View {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             } else {
-                Text("This book isn’t in your library any more.")
-                    .foregroundStyle(c.muted)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                ContentUnavailableView("Book Removed", systemImage: "book.closed", description: Text("This book isn’t in your library any more."))
             }
         }
-        .background(c.bg)
         .navigationTitle(library.book(bookID)?.title ?? "Reader")
         .navigationBarTitleDisplayMode(.inline)
-        .retroNavigation(c)
         .toolbar {
             if library.book(bookID)?.pdfFileURL != nil {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("PDF") { showPDF = true }
-                        .font(.mono(14))
-                        .tint(c.accent)
-                        .accessibilityLabel("View the original PDF")
+                    Button { showPDF = true } label: {
+                        Label("View Original PDF", systemImage: "doc.richtext")
+                    }
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showVoices = true } label: {
+                    Label("Voice", systemImage: "person.wave.2")
                 }
             }
         }
         .sheet(isPresented: $showPDF) {
             if let book = library.book(bookID), let url = book.pdfFileURL {
                 PDFSheet(url: url, title: book.title)
-                    .environment(\.palette, c)
+            }
+        }
+        .sheet(isPresented: $showVoices) {
+            if let session {
+                VoicePicker(session: session)
+                    .presentationDetents([.medium, .large])
             }
         }
         .onAppear {
@@ -59,13 +64,6 @@ struct ReaderView: View {
         .onChange(of: kokoro.isDownloaded) { _, downloaded in
             if downloaded { session?.kokoroBecameAvailable() }
         }
-        .sheet(isPresented: $showVoices) {
-            if let session {
-                VoicePicker(session: session)
-                    .environment(\.palette, c)
-                    .presentationDetents([.medium, .large])
-            }
-        }
     }
 }
 
@@ -74,21 +72,20 @@ private struct ReaderContent: View {
     @Bindable var session: ReaderSession
     @Binding var showVoices: Bool
     @Environment(KokoroManager.self) private var kokoro
-    @Environment(\.palette) private var c
     @AppStorage("fraudible.kokoroHintDismissed") private var hintDismissed = false
 
     var body: some View {
-        VStack(spacing: 0) {
+        Group {
             if let error = session.loadError {
-                Text(error).foregroundStyle(c.danger).padding(24).frame(maxHeight: .infinity)
+                ContentUnavailableView("Couldn’t Open Book", systemImage: "exclamationmark.triangle", description: Text(error))
             } else if let paragraphs = session.paragraphs {
                 text(paragraphs)
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            dock
         }
-        .alert("Couldn’t read aloud", isPresented: Binding(get: { session.errorMessage != nil }, set: { if !$0 { session.errorMessage = nil } })) {
+        .safeAreaInset(edge: .bottom, spacing: 0) { dock }
+        .alert("Couldn’t Read Aloud", isPresented: Binding(get: { session.errorMessage != nil }, set: { if !$0 { session.errorMessage = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(session.errorMessage ?? "")
@@ -98,17 +95,22 @@ private struct ReaderContent: View {
     private func text(_ paragraphs: [String]) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
+                LazyVStack(alignment: .leading, spacing: 18) {
                     ForEach(paragraphs.indices, id: \.self) { i in
                         let active = i == session.index
                         Text(paragraphs[i])
-                            .font(.system(size: 17))
-                            .lineSpacing(6)
-                            .foregroundStyle(active ? c.text : c.muted)
-                            .padding(6)
+                            .font(.system(size: 19, design: .serif))
+                            .lineSpacing(7)
+                            .foregroundStyle(active ? .primary : .secondary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(active ? c.tts.opacity(0.12) : .clear)
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                            .background {
+                                if active {
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .fill(Color.accentColor.opacity(0.12))
+                                }
+                            }
                             .contentShape(Rectangle())
                             .onTapGesture { session.tapParagraph(i) }
                             .accessibilityAddTraits(.isButton)
@@ -116,99 +118,160 @@ private struct ReaderContent: View {
                             .id(i)
                     }
                 }
-                .padding(.horizontal, 14)
+                .padding(.horizontal, 8)
                 .padding(.vertical, 16)
+                .animation(.smooth(duration: 0.25), value: session.index)
             }
             .onAppear { proxy.scrollTo(session.index, anchor: UnitPoint(x: 0.5, y: 0.3)) }
             // Keep the current paragraph in view.
             .onChange(of: session.index) { _, i in
-                withAnimation { proxy.scrollTo(i, anchor: UnitPoint(x: 0.5, y: 0.3)) }
+                withAnimation(.smooth) { proxy.scrollTo(i, anchor: UnitPoint(x: 0.5, y: 0.3)) }
             }
         }
     }
 
-    // MARK: - Dock
+    // MARK: - Floating controls
 
     private var dock: some View {
         VStack(spacing: 12) {
             engineCard
+
+            GlassEffectContainer(spacing: 12) {
+                HStack(spacing: 12) {
+                    Menu {
+                        Picker("Speed", selection: Binding(get: { session.rate }, set: { session.setRate($0) })) {
+                            ForEach(ReaderSession.rates, id: \.self) { rate in
+                                Text(rateLabel(rate)).tag(rate)
+                            }
+                        }
+                    } label: {
+                        Text(rateLabel(session.rate))
+                            .font(.subheadline.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(.primary)
+                            .frame(width: 48, height: 48)
+                            .glassEffect(.regular.interactive(), in: .circle)
+                    }
+                    .accessibilityLabel("Speed, \(rateLabel(session.rate))")
+
+                    circleButton("backward.fill", label: "Previous paragraph") { session.jump(-1) }
+
+                    Button(action: session.togglePlay) {
+                        ZStack {
+                            if session.preparingVoice || (session.reading && session.buffering) {
+                                ProgressView().tint(.white)
+                            } else {
+                                Image(systemName: session.isPlaying ? "pause.fill" : "play.fill")
+                                    .font(.system(size: 26, weight: .semibold))
+                                    .contentTransition(.symbolEffect(.replace))
+                            }
+                        }
+                        .foregroundStyle(.white)
+                        .frame(width: 68, height: 68)
+                        .glassEffect(.regular.tint(.accentColor).interactive(), in: .circle)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(session.isPlaying ? "Pause" : "Read aloud")
+
+                    circleButton("forward.fill", label: "Next paragraph") { session.jump(1) }
+
+                    Button { showVoices = true } label: {
+                        Image(systemName: session.voice.engine == .kokoro ? "sparkles" : "person.wave.2")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .frame(width: 48, height: 48)
+                            .glassEffect(.regular.interactive(), in: .circle)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Voice: \(session.voice.name)")
+                }
+            }
+
             Text(statusLine)
-                .font(.system(size: 12))
-                .foregroundStyle(c.faint)
-                .frame(maxWidth: .infinity)
-            HStack(spacing: 28) {
-                RoundButton(label: Glyph.prev, accessibilityLabel: "Previous paragraph") { session.jump(-1) }
-                RoundButton(
-                    label: session.isPlaying ? Glyph.pause : Glyph.play,
-                    big: true,
-                    accessibilityLabel: session.isPlaying ? "Pause" : "Read aloud",
-                    action: session.togglePlay
-                )
-                RoundButton(label: Glyph.next, accessibilityLabel: "Next paragraph") { session.jump(1) }
-            }
-            HStack(spacing: 10) {
-                pill("\(rateLabel(session.rate))× speed", action: session.cycleRate)
-                pill("\(session.voice.name) · \(session.voice.accent)") { showVoices = true }
-            }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .contentTransition(.numericText())
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 10)
-        .padding(.bottom, 12)
-        .background(c.surface)
-        .overlay(alignment: .top) { c.border.frame(height: 2) }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+    }
+
+    private func circleButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 52, height: 52)
+                .glassEffect(.regular.interactive(), in: .circle)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 
     private var statusLine: String {
-        let total = session.paragraphs?.count
-        let prefix = session.reading && session.buffering ? "Preparing audio… · " : ""
-        let count = total.map(String.init) ?? "…"
-        return "\(prefix)Paragraph \(session.index + 1) of \(count) · \(Int(session.progress * 100))%"
+        let count = session.paragraphs.map { String($0.count) } ?? "…"
+        let prefix = session.reading && session.buffering ? "Preparing audio · " : ""
+        return "\(prefix)\(session.voice.name) · Paragraph \(session.index + 1) of \(count) · \(Int(session.progress * 100))%"
     }
+
+    // MARK: - Kokoro cards
 
     @ViewBuilder private var engineCard: some View {
         if session.preparingVoice {
             card {
-                HStack(spacing: 10) {
-                    ProgressView().tint(c.tts)
-                    Text("Loading the Kokoro voice…").font(.mono(15)).foregroundStyle(c.text)
+                HStack(spacing: 12) {
+                    ProgressView()
+                    Text("Loading the Kokoro voice…").font(.subheadline.weight(.medium))
                 }
             }
         } else if session.pendingVoice != nil || kokoro.status == .downloading {
-            kokoroDownloadCard
-        } else if session.voice.engine == .apple, KokoroManager.isSupported, !kokoro.isDownloaded, !hintDismissed {
             card {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Want a more natural voice?").font(.mono(15)).foregroundStyle(c.text)
-                    Text("Kokoro is a free neural voice that runs entirely on your phone. It’s a one-time download of \(KokoroManager.downloadSize).")
-                        .font(.system(size: 13))
-                        .foregroundStyle(c.muted)
-                    HStack {
-                        Button("Download Kokoro") {
-                            session.choose(VoiceCatalog.resolve(nil, kokoroAvailable: true))
+                VStack(alignment: .leading, spacing: 10) {
+                    switch kokoro.status {
+                    case .failed(let message):
+                        Label(message, systemImage: "exclamationmark.triangle.fill")
+                            .font(.subheadline)
+                            .foregroundStyle(.red)
+                        Button("Try Again") { kokoro.download() }
+                            .buttonStyle(.glassProminent)
+                    default:
+                        HStack {
+                            Label("Downloading Kokoro", systemImage: "sparkles")
+                                .font(.subheadline.weight(.semibold))
+                            Spacer()
+                            Text("\(Int(kokoro.progress * 100))%")
+                                .font(.subheadline.monospacedDigit())
+                                .foregroundStyle(.secondary)
                         }
-                        .buttonStyle(RetroButtonStyle(small: true))
-                        Button("Not now") { hintDismissed = true }
-                            .buttonStyle(RetroButtonStyle(variant: .ghost, small: true))
+                        ProgressView(value: kokoro.progress)
+                        HStack {
+                            Text("Keep listening with the current voice meanwhile.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Cancel") { kokoro.cancelDownload() }
+                                .font(.caption.weight(.semibold))
+                                .buttonStyle(.glass)
+                        }
                     }
                 }
             }
-        }
-    }
-
-    private var kokoroDownloadCard: some View {
-        card {
-            VStack(alignment: .leading, spacing: 8) {
-                switch kokoro.status {
-                case .failed(let message):
-                    Text(message).font(.system(size: 13)).foregroundStyle(c.danger)
-                    Button("Try again") { kokoro.download() }.buttonStyle(RetroButtonStyle(small: true))
-                default:
-                    Text("Downloading the Kokoro voice… \(Int(kokoro.progress * 100))%").font(.mono(15)).foregroundStyle(c.text)
-                    ProgressBar(value: kokoro.progress, color: c.tts)
-                    Text("You can keep listening with the current voice meanwhile.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(c.muted)
-                    Button("Cancel") { kokoro.cancelDownload() }.buttonStyle(RetroButtonStyle(variant: .ghost, small: true))
+        } else if session.voice.engine == .apple, KokoroManager.isSupported, !kokoro.isDownloaded, !hintDismissed {
+            card {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("Want a more natural voice?", systemImage: "sparkles")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Kokoro is a free neural voice that runs entirely on your iPhone. One-time download of \(KokoroManager.downloadSize).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Button("Download") {
+                            session.choose(VoiceCatalog.resolve(nil, kokoroAvailable: true))
+                        }
+                        .buttonStyle(.glassProminent)
+                        Button("Not Now") { withAnimation { hintDismissed = true } }
+                            .buttonStyle(.glass)
+                    }
+                    .font(.subheadline.weight(.semibold))
                 }
             }
         }
@@ -217,27 +280,8 @@ private struct ReaderContent: View {
     private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         content()
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-            .background(c.surfaceHigh)
-            .clipShape(RoundedRectangle(cornerRadius: 5))
-            .overlay(RoundedRectangle(cornerRadius: 5).stroke(c.border, lineWidth: 2))
-    }
-
-    private func pill(_ label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(label)
-                .font(.mono(13))
-                .foregroundStyle(c.text)
-                .lineLimit(1)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(c.border, lineWidth: 2))
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func rateLabel(_ rate: Double) -> String {
-        rate == rate.rounded() ? String(Int(rate)) : String(format: "%g", rate)
+            .padding(16)
+            .glassEffect(.regular, in: .rect(cornerRadius: 24))
     }
 }
 
@@ -245,7 +289,6 @@ private struct ReaderContent: View {
 private struct VoicePicker: View {
     let session: ReaderSession
     @Environment(KokoroManager.self) private var kokoro
-    @Environment(\.palette) private var c
     @Environment(\.dismiss) private var dismiss
     @State private var appleVoices: [ReaderVoice] = []
     @State private var confirmDelete = false
@@ -259,29 +302,28 @@ private struct VoicePicker: View {
                         ForEach(VoiceCatalog.kokoro) { voice in row(voice) }
                     } else {
                         Text("Kokoro needs a real iPhone; it can’t run in the Simulator.")
-                            .font(.system(size: 13)).foregroundStyle(c.muted)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
                     }
                 } header: {
-                    SectionLabel(text: "Kokoro · natural, on-device")
+                    Label("Kokoro", systemImage: "sparkles")
+                } footer: {
+                    Text("Natural neural voices that run on your iPhone. Uses more battery than Apple’s voices.")
                 }
 
                 Section {
                     ForEach(appleVoices) { voice in row(voice) }
                 } header: {
-                    SectionLabel(text: "Apple voices · built in")
+                    Label("Apple", systemImage: "apple.logo")
                 } footer: {
                     Text("Get more natural Apple voices (Enhanced and Premium) in Settings › Accessibility › Spoken Content › Voices › English.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(c.faint)
                 }
             }
-            .scrollContentBackground(.hidden)
-            .background(c.surface)
-            .navigationTitle("Choose a voice")
+            .navigationTitle("Voice")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }.tint(c.accent)
+                    Button("Done") { dismiss() }
                 }
             }
             .confirmationDialog("Delete the Kokoro voice?", isPresented: $confirmDelete, titleVisibility: .visible) {
@@ -302,19 +344,20 @@ private struct VoicePicker: View {
         switch kokoro.status {
         case .downloading:
             VStack(alignment: .leading, spacing: 6) {
-                Text("Downloading… \(Int(kokoro.progress * 100))%").font(.system(size: 13)).foregroundStyle(c.text)
-                ProgressBar(value: kokoro.progress, color: c.tts)
+                Text("Downloading… \(Int(kokoro.progress * 100))%").font(.subheadline)
+                ProgressView(value: kokoro.progress)
             }
         case .failed(let message):
-            Text(message).font(.system(size: 13)).foregroundStyle(c.danger)
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .font(.subheadline)
+                .foregroundStyle(.red)
         default:
             if kokoro.isDownloaded {
-                Button("Delete Kokoro voice (\(KokoroManager.downloadSize))", role: .destructive) { confirmDelete = true }
-                    .font(.system(size: 13))
+                Button("Delete Kokoro Voice (\(KokoroManager.downloadSize))", role: .destructive) { confirmDelete = true }
             } else {
-                Text("Pick a voice to download Kokoro (\(KokoroManager.downloadSize), one time). Needs a recent iPhone; uses more battery than Apple’s voices.")
-                    .font(.system(size: 13))
-                    .foregroundStyle(c.muted)
+                Text("Pick a voice to download Kokoro (\(KokoroManager.downloadSize), one time).")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -328,19 +371,22 @@ private struct VoicePicker: View {
         } label: {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(selected ? "✓ " : "")\(voice.name)")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(selected ? c.tts : c.text)
-                    Text("\(voice.accent) · \(voice.detail)\(needsDownload ? " · needs download" : "")")
-                        .font(.system(size: 13))
-                        .foregroundStyle(c.muted)
+                    Text(voice.name).foregroundStyle(.primary)
+                    Text("\(voice.accent) · \(voice.detail)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Spacer()
+                if needsDownload {
+                    Image(systemName: "icloud.and.arrow.down").foregroundStyle(.secondary)
+                }
+                if selected {
+                    Image(systemName: "checkmark").foregroundStyle(Color.accentColor).fontWeight(.semibold)
+                }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .listRowBackground(c.surfaceHigh)
     }
 }
 
@@ -349,7 +395,6 @@ private struct VoicePicker: View {
 private struct PDFSheet: View {
     let url: URL
     let title: String
-    @Environment(\.palette) private var c
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -360,15 +405,12 @@ private struct PDFSheet: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button("Done") { dismiss() }.tint(c.text)
+                        Button("Done") { dismiss() }
                     }
                     ToolbarItem(placement: .topBarTrailing) {
-                        ShareLink(item: url) { Image(systemName: "square.and.arrow.up") }
-                            .tint(c.accent)
-                            .accessibilityLabel("Share PDF")
+                        ShareLink(item: url) { Label("Share PDF", systemImage: "square.and.arrow.up") }
                     }
                 }
-                .retroNavigation(c)
         }
     }
 }

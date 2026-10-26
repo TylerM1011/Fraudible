@@ -99,9 +99,13 @@ final class ReaderSession: AudioOwner {
 
     func cycleRate() {
         let i = Self.rates.firstIndex(of: rate) ?? 0
-        rate = Self.rates[(i + 1) % Self.rates.count]
-        backend?.setRate(rate)
-        library.update(bookID) { $0.ttsRate = self.rate }
+        setRate(Self.rates[(i + 1) % Self.rates.count])
+    }
+
+    func setRate(_ newRate: Double) {
+        rate = newRate
+        backend?.setRate(newRate)
+        library.update(bookID) { $0.ttsRate = newRate }
     }
 
     func choose(_ newVoice: ReaderVoice) {

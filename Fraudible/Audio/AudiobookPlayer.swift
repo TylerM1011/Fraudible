@@ -154,7 +154,11 @@ final class AudiobookPlayer: AudioOwner {
 
     func cycleRate() {
         let i = Self.rates.firstIndex(of: rate) ?? 0
-        rate = Self.rates[(i + 1) % Self.rates.count]
+        setRate(Self.rates[(i + 1) % Self.rates.count])
+    }
+
+    func setRate(_ newRate: Double) {
+        rate = newRate
         player.defaultRate = Float(rate)
         if isPlaying { player.rate = Float(rate) }
         publishNowPlaying()

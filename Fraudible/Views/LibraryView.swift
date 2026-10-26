@@ -6,7 +6,6 @@ struct LibraryView: View {
     @Environment(Library.self) private var library
     @Environment(AudiobookPlayer.self) private var player
     @Environment(AppRouter.self) private var router
-    @Environment(\.palette) private var c
 
     @State private var showImporter = false
     @State private var importing = false
@@ -19,48 +18,35 @@ struct LibraryView: View {
         library.books.sorted { $0.addedAt > $1.addedAt }
     }
 
+    /// The most recently started book that isn't finished, for the "Continue" card.
+    private var continueBook: LibraryBook? {
+        sorted.first { book in
+            guard book.isReady else { return false }
+            if book.kind == .audiobook {
+                guard let pos = book.audioPosition else { return false }
+                return pos.track > 0 || pos.seconds > 5
+            }
+            return (book.ttsPosition ?? 0) > 0
+        }
+    }
+
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            if importing { importCard }
-            List {
-                if library.loaded && library.books.isEmpty {
-                    emptyState.listRowBackground(c.bg).listRowSeparator(.hidden)
-                }
-                ForEach(sorted) { book in
-                    Button { tap(book) } label: { LibraryRow(book: book) }
-                        .buttonStyle(.plain)
-                        .listRowBackground(c.bg)
-                        .listRowSeparator(.hidden)
-                        .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
-                        .contextMenu { menu(for: book) }
-                        .swipeActions {
-                            Button("Delete", role: .destructive) { pendingDelete = book }
-                        }
-                }
-                if !library.books.isEmpty {
-                    Text("Swipe or long-press a book to delete it.")
-                        .font(.mono(11, weight: .regular))
-                        .foregroundStyle(c.faint)
-                        .frame(maxWidth: .infinity)
-                        .listRowBackground(c.bg)
-                        .listRowSeparator(.hidden)
-                }
+        Group {
+            if library.loaded && library.books.isEmpty && !importing {
+                emptyState
+            } else {
+                list
             }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
         }
-        .background(c.bg)
-        .safeAreaInset(edge: .bottom, spacing: 0) { MiniPlayer() }
         .navigationTitle("Library")
-        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                Text("Library").font(.mono(18, weight: .heavy)).foregroundStyle(c.text)
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showImporter = true } label: {
+                    Label("Import a PDF, EPUB or text file", systemImage: "plus")
+                }
+                .disabled(importing)
             }
-            ToolbarItem(placement: .topBarTrailing) { ThemeToggle() }
         }
-        .retroNavigation(c)
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.pdf, .epub, .plainText]) { result in
             if case .success(let url) = result { startImport(url) }
         }
@@ -74,68 +60,83 @@ struct LibraryView: View {
             isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
             titleVisibility: .visible
         ) {
-            Button("Delete from device", role: .destructive) {
+            Button("Delete from iPhone", role: .destructive) {
                 if let book = pendingDelete { delete(book) }
             }
-            Button("Keep", role: .cancel) {}
         } message: {
-            Text("This removes the downloaded files from your phone.")
+            Text("This removes the downloaded files. You can download the book again later.")
         }
     }
 
-    private var header: some View {
-        HStack {
-            Text("\(library.books.count) \(library.books.count == 1 ? "book" : "books") on this device")
-                .font(.system(size: 13))
-                .foregroundStyle(c.muted)
-            Spacer()
-            Button("+ Import PDF / EPUB") { showImporter = true }
-                .buttonStyle(RetroButtonStyle(variant: .ghost, small: true))
-                .disabled(importing)
-        }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
-    }
-
-    private var importCard: some View {
-        HStack(spacing: 12) {
-            ProgressView().tint(c.tts)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Extracting text… \(Int(importProgress * 100))%").font(.system(size: 12)).foregroundStyle(c.faint)
-                ProgressBar(value: importProgress, color: c.tts)
-            }
-            Button("Cancel") { importTask?.cancel() }
-                .buttonStyle(RetroButtonStyle(variant: .ghost, small: true))
-        }
-        .padding(12)
-        .background(c.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 5))
-        .overlay(RoundedRectangle(cornerRadius: 5).stroke(c.border, lineWidth: 2))
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
-    }
+    // MARK: - Pieces
 
     private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Nothing here yet").font(.mono(22, weight: .heavy)).foregroundStyle(c.text)
-            Text("Download a book from Search, or import a PDF, EPUB or text file you own to have it read aloud.")
-                .font(.system(size: 15))
-                .foregroundStyle(c.muted)
-                .lineSpacing(4)
+        ContentUnavailableView {
+            Label("No Books Yet", systemImage: "books.vertical")
+        } description: {
+            Text("Find free audiobooks and ebooks in Search, or import a PDF, EPUB or text file you own to have it read aloud.")
+        } actions: {
+            Button("Find Books") { router.tab = .search }
+                .buttonStyle(.glassProminent)
+            Button("Import a File") { showImporter = true }
+                .buttonStyle(.glass)
         }
-        .padding(.vertical, 24)
-        .padding(.horizontal, 8)
+    }
+
+    private var list: some View {
+        List {
+            if let book = continueBook {
+                Section {
+                    ContinueCard(book: book) { tap(book) }
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
+                } header: {
+                    Text("Continue")
+                }
+            }
+
+            if importing {
+                Section {
+                    HStack(spacing: 14) {
+                        ProgressRing(value: importProgress, tint: .purple)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Importing…").font(.subheadline.weight(.semibold))
+                            Text("Extracting text · \(Int(importProgress * 100))%")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Cancel") { importTask?.cancel() }
+                            .buttonStyle(.glass)
+                    }
+                }
+            }
+
+            Section {
+                ForEach(sorted) { book in
+                    Button { tap(book) } label: { LibraryRow(book: book) }
+                        .buttonStyle(.plain)
+                        .contextMenu { menu(for: book) }
+                        .swipeActions {
+                            Button("Delete", systemImage: "trash", role: .destructive) { pendingDelete = book }
+                        }
+                }
+            } header: {
+                Text("\(library.books.count) \(library.books.count == 1 ? "Book" : "Books")")
+            }
+        }
+        .listStyle(.insetGrouped)
     }
 
     @ViewBuilder
     private func menu(for book: LibraryBook) -> some View {
         if book.status == .downloading {
-            Button("Cancel download") { library.cancel(book.id) }
+            Button("Cancel Download", systemImage: "xmark.circle") { library.cancel(book.id) }
         }
         if let pdf = book.pdfFileURL {
             ShareLink(item: pdf) { Label("Share PDF", systemImage: "square.and.arrow.up") }
         }
-        Button("Delete from device", role: .destructive) { pendingDelete = book }
+        Button("Delete from iPhone", systemImage: "trash", role: .destructive) { pendingDelete = book }
     }
 
     // MARK: - Actions
@@ -194,54 +195,109 @@ struct LibraryView: View {
     }
 }
 
+/// Big card for the book you were last listening to, on a glass panel tinted by its kind.
+private struct ContinueCard: View {
+    let book: LibraryBook
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 16) {
+                Cover(url: book.coverImageURL, title: book.title, kind: book.kind, width: 64)
+                VStack(alignment: .leading, spacing: 4) {
+                    KindLabel(kind: book.kind)
+                    Text(book.title)
+                        .font(.headline)
+                        .lineLimit(2)
+                    Text(book.author)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Text(LibraryRow.whereYouAre(book))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "play.fill")
+                    .font(.title3)
+                    .foregroundStyle(.white)
+                    .frame(width: 48, height: 48)
+                    .glassEffect(.regular.tint(.accentColor).interactive(), in: .circle)
+            }
+            .padding(16)
+            .glassEffect(.regular.tint(book.kind.tint.opacity(0.12)).interactive(), in: .rect(cornerRadius: 24))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Continue \(book.title)")
+    }
+}
+
 /// One book in the library, with its download or listening progress.
 private struct LibraryRow: View {
     let book: LibraryBook
-    @Environment(\.palette) private var c
 
     var body: some View {
-        HStack(spacing: 12) {
-            Cover(url: book.coverImageURL, title: book.title, size: 52)
-            VStack(alignment: .leading, spacing: 4) {
-                KindBadge(kind: book.kind)
+        HStack(spacing: 14) {
+            Cover(url: book.coverImageURL, title: book.title, kind: book.kind, width: 50)
+            VStack(alignment: .leading, spacing: 3) {
                 Text(book.title)
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(c.text)
+                    .font(.subheadline.weight(.semibold))
                     .lineLimit(2)
                 Text(book.author)
-                    .font(.system(size: 13))
-                    .foregroundStyle(c.muted)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
-                Text(statusLine)
-                    .font(.system(size: 12))
-                    .foregroundStyle(book.status == .error ? c.danger : c.faint)
-                    .lineLimit(2)
-                if book.status == .downloading {
-                    ProgressBar(value: book.progress, color: c.kind(book.kind))
+                HStack(spacing: 6) {
+                    KindLabel(kind: book.kind)
+                    Text(statusLine)
+                        .font(.caption2)
+                        .foregroundStyle(book.status == .error ? AnyShapeStyle(.red) : AnyShapeStyle(.tertiary))
+                        .lineLimit(1)
+                }
+                if let progress {
+                    ProgressView(value: progress)
+                        .tint(book.status == .downloading ? book.kind.tint : .accentColor)
+                        .padding(.top, 2)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            if book.status == .error {
+                Image(systemName: "arrow.clockwise.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.red)
+                    .accessibilityLabel("Tap to retry")
+            }
         }
+        .padding(.vertical, 2)
         .contentShape(Rectangle())
+    }
+
+    /// Download progress, or how far through the book you are.
+    private var progress: Double? {
+        if book.status == .downloading { return book.progress }
+        guard book.isReady, book.kind == .tts, let total = book.ttsParagraphs, total > 0, let at = book.ttsPosition, at > 0 else { return nil }
+        return Double(at + 1) / Double(total)
     }
 
     private var statusLine: String {
         switch book.status {
-        case .downloading: return "Downloading… \(Int(book.progress * 100))%"
+        case .downloading: return "Downloading \(Int(book.progress * 100))%"
         case .error: return book.error ?? "Download failed. Tap to retry."
-        case .ready: break
+        case .ready: return Self.whereYouAre(book)
         }
+    }
+
+    static func whereYouAre(_ book: LibraryBook) -> String {
         if book.kind == .audiobook {
             let count = book.tracks?.count ?? 0
-            var line = "\(count) chapters"
             if let pos = book.audioPosition, pos.track > 0 || pos.seconds > 5 {
-                line += " · Chapter \(pos.track + 1), \(formatTime(pos.seconds))"
+                return "Chapter \(pos.track + 1) of \(count) · \(formatTime(pos.seconds))"
             }
-            return line
+            return "\(count) chapters"
         }
         let total = book.ttsParagraphs ?? 0
         let at = book.ttsPosition ?? 0
-        let read = total > 0 ? "\(Int(Double(at) / Double(total) * 100))% read" : "Ready"
-        return book.pdfFileName != nil ? "\(read) · PDF saved" : read
+        let read = total > 0 && at > 0 ? "\(Int(Double(at + 1) / Double(total) * 100))% read" : "Not started"
+        return book.pdfFileName != nil ? "\(read) · PDF" : read
     }
 }

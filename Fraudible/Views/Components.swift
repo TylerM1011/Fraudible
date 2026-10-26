@@ -1,37 +1,20 @@
 import SwiftUI
 
-/// Labels a result as an audiobook or a text-to-speech ebook.
-struct KindBadge: View {
-    let kind: BookKind
-    @Environment(\.palette) private var c
-
-    var body: some View {
-        let color = c.kind(kind)
-        Text("\(kind == .audiobook ? "♫" : "“") \(kind.label)")
-            .font(.system(size: 11, weight: .bold))
-            .tracking(0.3)
-            .foregroundStyle(color)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.13))
-            .overlay(RoundedRectangle(cornerRadius: 3).stroke(color, lineWidth: 2))
-            .clipShape(RoundedRectangle(cornerRadius: 3))
-    }
-}
-
+/// Book cover with rounded corners and a soft shadow. Falls back to a tinted placeholder.
 struct Cover: View {
     let url: URL?
     let title: String
-    var size: CGFloat = 56
-    @Environment(\.palette) private var c
+    var kind: BookKind = .tts
+    var width: CGFloat = 56
+    var cornerRadius: CGFloat = 8
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 4)
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         ZStack {
-            c.surfaceHigh
-            Text(String(title.trimmingCharacters(in: .whitespaces).prefix(1)).uppercased().ifEmpty("?"))
-                .font(.mono(size * 0.45, weight: .bold))
-                .foregroundStyle(c.muted)
+            LinearGradient(colors: [kind.tint.opacity(0.55), kind.tint.opacity(0.25)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            Text(String(title.trimmingCharacters(in: .whitespaces).prefix(1)).uppercased())
+                .font(.system(size: width * 0.42, weight: .semibold, design: .serif))
+                .foregroundStyle(.white.opacity(0.9))
             if let url {
                 AsyncImage(url: url) { phase in
                     if let image = phase.image {
@@ -40,147 +23,87 @@ struct Cover: View {
                 }
             }
         }
-        .frame(width: size, height: size * 1.4)
+        .frame(width: width, height: width * 1.45)
         .clipShape(shape)
-        .overlay(shape.stroke(c.border, lineWidth: 2))
+        .overlay(shape.strokeBorder(.primary.opacity(0.08), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.18), radius: width > 100 ? 18 : 4, y: width > 100 ? 10 : 2)
         .accessibilityHidden(true)
     }
 }
 
-struct ProgressBar: View {
-    let value: Double
-    var color: Color?
-    var height: CGFloat = 4
-    @Environment(\.palette) private var c
+/// Small coloured label saying how a book is listened to.
+struct KindLabel: View {
+    let kind: BookKind
 
     var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                c.surfaceHigh
-                (color ?? c.accent)
-                    .frame(width: geo.size.width * min(1, max(0, value)))
-            }
+        Label(kind.shortLabel, systemImage: kind.symbol)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(kind.tint)
+            .labelStyle(.titleAndIcon)
+            .imageScale(.small)
+    }
+}
+
+/// A circular progress ring, like the App Store's download indicator.
+struct ProgressRing: View {
+    let value: Double
+    var tint: Color = .accentColor
+    var size: CGFloat = 28
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(tint.opacity(0.2), lineWidth: 3)
+            Circle()
+                .trim(from: 0, to: max(0.02, min(1, value)))
+                .stroke(tint, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .animation(.smooth, value: value)
+            RoundedRectangle(cornerRadius: 2).fill(tint).frame(width: size * 0.28, height: size * 0.28)
         }
-        .frame(height: height)
-        .overlay(Rectangle().stroke(c.border, lineWidth: 1))
+        .frame(width: size, height: size)
         .accessibilityElement()
+        .accessibilityLabel("Downloading")
         .accessibilityValue("\(Int(min(1, max(0, value)) * 100)) percent")
     }
 }
 
-/// The chunky, outlined button used across the app.
-struct RetroButtonStyle: ButtonStyle {
-    enum Variant { case primary, ghost, danger }
-    var variant: Variant = .primary
-    var small = false
-    @Environment(\.palette) private var c
-    @Environment(\.isEnabled) private var isEnabled
+/// The download / progress / retry / open control used in search results.
+struct DownloadControl: View {
+    enum Action { case download, cancel, retry, open }
 
-    func makeBody(configuration: Configuration) -> some View {
-        let background: Color = variant == .primary ? c.accent : c.surface
-        let foreground: Color = switch variant {
-        case .primary: c.accentText
-        case .ghost: c.text
-        case .danger: c.danger
-        }
-        configuration.label
-            .font(.mono(small ? 12 : 14))
-            .textCase(.uppercase)
-            .tracking(0.5)
-            .foregroundStyle(foreground)
-            .padding(.horizontal, small ? 14 : 18)
-            .padding(.vertical, small ? 7 : 11)
-            .background(background)
-            .clipShape(RoundedRectangle(cornerRadius: 5))
-            .overlay(RoundedRectangle(cornerRadius: 5).stroke(variant == .danger ? c.danger : c.border, lineWidth: 2))
-            .offset(y: configuration.isPressed ? 1 : 0)
-            .opacity(isEnabled ? 1 : 0.5)
-    }
-}
-
-/// Round transport button used by both players.
-struct RoundButton: View {
-    let label: String
-    var big = false
-    let accessibilityLabel: String
-    let action: () -> Void
-    @Environment(\.palette) private var c
+    let kind: BookKind
+    let book: LibraryBook?
+    let onAction: (Action) -> Void
 
     var body: some View {
-        let size: CGFloat = big ? 76 : 52
-        Button(action: action) {
-            Text(label)
-                .font(.mono(big ? 26 : 16, weight: .bold))
-                .foregroundStyle(big ? c.accentText : c.text)
-                .frame(width: size, height: size)
-                .background(big ? c.accent : c.surfaceHigh)
-                .clipShape(Circle())
-                .overlay(Circle().stroke(c.border, lineWidth: 2))
+        switch book?.status {
+        case nil:
+            Button { onAction(.download) } label: {
+                Label("Get", systemImage: "arrow.down")
+                    .labelStyle(.iconOnly)
+                    .font(.body.weight(.semibold))
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .accessibilityLabel("Download")
+        case .downloading:
+            Button { onAction(.cancel) } label: {
+                ProgressRing(value: book?.progress ?? 0, tint: kind.tint)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Cancels the download")
+        case .error:
+            Button { onAction(.retry) } label: {
+                Label("Retry", systemImage: "arrow.clockwise")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .buttonStyle(.glass)
+            .tint(.red)
+        case .ready:
+            Button(kind == .audiobook ? "Listen" : "Read") { onAction(.open) }
+                .font(.subheadline.weight(.semibold))
+                .buttonStyle(.glassProminent)
         }
-        .buttonStyle(PressScaleStyle())
-        .accessibilityLabel(accessibilityLabel)
-    }
-}
-
-struct PressScaleStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label.scaleEffect(configuration.isPressed ? 0.94 : 1)
-    }
-}
-
-/// Small toolbar control that flips between the light ("paper") and dark ("screen") themes.
-struct ThemeToggle: View {
-    @AppStorage("fraudible.themeMode") private var mode = ThemeMode.system.rawValue
-    @Environment(\.colorScheme) private var scheme
-    @Environment(\.palette) private var c
-
-    var body: some View {
-        Button {
-            mode = (scheme == .dark ? ThemeMode.light : ThemeMode.dark).rawValue
-        } label: {
-            Text(scheme == .dark ? Glyph.sun : Glyph.moon)
-                .font(.system(size: 15))
-                .foregroundStyle(c.text)
-                .frame(width: 32, height: 32)
-                .background(c.surfaceHigh)
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(c.border, lineWidth: 2))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(scheme == .dark ? "Switch to light mode" : "Switch to dark mode")
-    }
-}
-
-/// A heading in the chunky uppercase monospace style.
-struct SectionLabel: View {
-    let text: String
-    var color: Color?
-    @Environment(\.palette) private var c
-
-    var body: some View {
-        Text(text)
-            .font(.mono(13, weight: .heavy))
-            .textCase(.uppercase)
-            .tracking(0.8)
-            .foregroundStyle(color ?? c.muted)
-    }
-}
-
-extension String {
-    func ifEmpty(_ fallback: String) -> String { isEmpty ? fallback : self }
-}
-
-func formatTime(_ totalSeconds: Double) -> String {
-    let s = max(0, Int(totalSeconds.isFinite ? totalSeconds : 0))
-    let h = s / 3600, m = (s % 3600) / 60, sec = s % 60
-    return h > 0 ? String(format: "%d:%02d:%02d", h, m, sec) : String(format: "%d:%02d", m, sec)
-}
-
-extension View {
-    /// Shared navigation-bar styling: the palette background and the monospace title.
-    func retroNavigation(_ c: Palette) -> some View {
-        self
-            .toolbarBackground(c.bg, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
     }
 }

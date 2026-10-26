@@ -1,4 +1,4 @@
-This is a native iOS app written in Swift and SwiftUI (no Expo or React Native). Target: iOS 18+, built with Xcode 26 or later.
+This is a native iOS app written in Swift and SwiftUI (no Expo or React Native). Target: iOS 26+ (Liquid Glass), built with Xcode 26 or later.
 
 ## Project
 
@@ -11,7 +11,7 @@ This is a native iOS app written in Swift and SwiftUI (no Expo or React Native).
 
 - State lives in `@Observable` classes injected with `.environment(...)`: `Library`, `AudiobookPlayer`, `KokoroManager`, `AppRouter`.
 - The library stores file *names*, never absolute paths; resolve them with `Storage.bookDir(_:)`.
-- Colours come from `@Environment(\.palette)`; headings use `Font.mono(_:weight:)`.
+- Design follows Apple's Liquid Glass: system colours and fonts, `.glassEffect`, `.buttonStyle(.glass/.glassProminent)`, `GlassEffectContainer`. The only custom colours are `BookKind.tint`; the app tint is Assets › AccentColor. The mini player lives in `.tabViewBottomAccessory`.
 - Kokoro (MLX) needs a real device; guard Simulator-only paths with `KokoroManager.isSupported`.
 
 ## Commands

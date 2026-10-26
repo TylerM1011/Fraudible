@@ -1,6 +1,6 @@
 # Fraudible
 
-A native iPhone audiobook app (Swift + SwiftUI) built on free, legal, public-domain catalogues.
+A native iPhone audiobook app (Swift + SwiftUI, with iOS 26's Liquid Glass design) built on free, legal, public-domain catalogues.
 
 - **Search** LibriVox, Project Gutenberg and Open Library at the same time. Every result is labelled
   **Audiobook** (human narration from LibriVox) or **Text-to-speech** (an ebook read aloud).
@@ -24,7 +24,7 @@ A native iPhone audiobook app (Swift + SwiftUI) built on free, legal, public-dom
 ## Requirements
 
 - **Xcode 26 or later** on a Mac.
-- iPhone or iPad on **iOS 18 or later**.
+- iPhone or iPad on **iOS 26 or later** (the app uses Liquid Glass).
 - Kokoro needs a **real device**: MLX uses the GPU, which the Simulator doesn't provide. In the Simulator the
   reader uses Apple voices only; everything else works.
 
@@ -71,7 +71,7 @@ Fraudible/
     SpeechBackends.swift      Apple (AVSpeechSynthesizer) and Kokoro (AVAudioEngine) playback
     Kokoro.swift              Kokoro model download, loading and synthesis
     Voices.swift              Voice lists and defaults
-  Views/                      SwiftUI screens and the retro components
+  Views/                      SwiftUI screens (system Liquid Glass components)
   Resources/voices.npz        Kokoro voice styles (from KokoroTestApp, Apache 2.0)
 ```
 
