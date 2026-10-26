@@ -8,7 +8,7 @@ import { searchAudiobooks, searchEbooks } from '@/lib/catalog';
 import { useLibrary } from '@/lib/library';
 import { usePlayer } from '@/lib/player';
 import { idFromKey } from '@/lib/storage';
-import { colors, kindColor } from '@/lib/theme';
+import { fonts, kindColors, useTheme, type Colors } from '@/lib/theme';
 import type { BookKind, BookStatus, LibraryBook, SearchResult } from '@/lib/types';
 
 type Filter = 'all' | BookKind;
@@ -43,6 +43,8 @@ interface SourceState {
 
 const EMPTY: SourceState = { results: [], loading: false };
 
+type Styles = ReturnType<typeof makeStyles>;
+
 /**
  * One result row. Memoised and given only primitive props for its library state,
  * so a download progressing on one row doesn't re-render every other row.
@@ -52,11 +54,15 @@ const ResultRow = memo(function ResultRow({
   status,
   progress,
   onAction,
+  colors,
+  styles,
 }: {
   item: SearchResult;
   status?: BookStatus;
   progress: number;
   onAction: (item: SearchResult, action: Action) => void;
+  colors: Colors;
+  styles: Styles;
 }) {
   let action: React.ReactNode;
   if (!status) action = <Button small label="Download" onPress={() => onAction(item, 'download')} />;
@@ -64,7 +70,7 @@ const ResultRow = memo(function ResultRow({
     action = (
       <View style={{ width: 84, gap: 6, alignItems: 'center' }}>
         <Text style={styles.meta}>{Math.round(progress * 100)}%</Text>
-        <ProgressBar value={progress} color={kindColor[item.kind]} />
+        <ProgressBar value={progress} color={kindColors(colors)[item.kind]} />
       </View>
     );
   else if (status === 'error') action = <Button small variant="danger" label="Retry" onPress={() => onAction(item, 'retry')} />;
@@ -87,6 +93,8 @@ const ResultRow = memo(function ResultRow({
 });
 
 export default function SearchScreen() {
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const library = useLibrary();
   const { open } = usePlayer();
   const [query, setQuery] = useState('');
@@ -167,7 +175,7 @@ export default function SearchScreen() {
         <View style={styles.filters}>
           {FILTERS.map((f) => {
             const active = f.value === filter;
-            const tint = f.value === 'all' ? colors.accent : kindColor[f.value];
+            const tint = f.value === 'all' ? colors.accent : kindColors(colors)[f.value];
             return (
               <Pressable
                 key={f.value}
@@ -210,11 +218,11 @@ export default function SearchScreen() {
             return (
               <View style={styles.sectionHeader}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <Text style={[styles.sectionTitle, { color: kindColor[section.kind] }]}>
+                  <Text style={[styles.sectionTitle, { color: kindColors(colors)[section.kind] }]}>
                     {SECTION_INFO[section.kind].title}
                     {src.loading ? '' : ` · ${section.data.length}`}
                   </Text>
-                  {src.loading ? <ActivityIndicator size="small" color={kindColor[section.kind]} /> : null}
+                  {src.loading ? <ActivityIndicator size="small" color={kindColors(colors)[section.kind]} /> : null}
                 </View>
                 <Text style={styles.sectionNote}>{SECTION_INFO[section.kind].note}</Text>
                 {src.error ? <Text style={styles.error}>{src.error}</Text> : null}
@@ -226,7 +234,16 @@ export default function SearchScreen() {
           }}
           renderItem={({ item }) => {
             const book = bookByKey.get(idFromKey(item.key));
-            return <ResultRow item={item} status={book?.status} progress={book?.progress ?? 0} onAction={onAction} />;
+            return (
+              <ResultRow
+                item={item}
+                status={book?.status}
+                progress={book?.progress ?? 0}
+                onAction={onAction}
+                colors={colors}
+                styles={styles}
+              />
+            );
           }}
         />
       )}
@@ -235,31 +252,32 @@ export default function SearchScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg },
-  searchBox: { paddingHorizontal: 16, paddingBottom: 8, gap: 10 },
-  input: {
-    backgroundColor: colors.surface,
-    color: colors.text,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 16,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  filters: { flexDirection: 'row', gap: 8 },
-  chip: { borderWidth: 1, borderColor: colors.border, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 6 },
-  chipText: { color: colors.muted, fontWeight: '600', fontSize: 13 },
-  sectionHeader: { paddingHorizontal: 16, paddingTop: 18, paddingBottom: 6, gap: 2 },
-  sectionTitle: { fontSize: 13, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.8 },
-  sectionNote: { color: colors.faint, fontSize: 12 },
-  error: { color: colors.danger, fontSize: 13, marginTop: 4 },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 10 },
-  title: { color: colors.text, fontWeight: '700', fontSize: 15 },
-  author: { color: colors.muted, fontSize: 13 },
-  meta: { color: colors.faint, fontSize: 12 },
-  empty: { padding: 24, paddingTop: 40 },
-  emptyTitle: { color: colors.text, fontSize: 22, fontWeight: '800', marginBottom: 10 },
-  emptyText: { color: colors.muted, fontSize: 15, lineHeight: 22 },
-});
+const makeStyles = (colors: Colors) =>
+  StyleSheet.create({
+    screen: { flex: 1, backgroundColor: colors.bg },
+    searchBox: { paddingHorizontal: 16, paddingBottom: 8, gap: 10 },
+    input: {
+      backgroundColor: colors.surface,
+      color: colors.text,
+      borderRadius: 5,
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      fontSize: 16,
+      borderWidth: 2,
+      borderColor: colors.border,
+    },
+    filters: { flexDirection: 'row', gap: 8 },
+    chip: { borderWidth: 2, borderColor: colors.border, borderRadius: 4, paddingHorizontal: 12, paddingVertical: 6 },
+    chipText: { color: colors.muted, fontWeight: '700', fontSize: 12, fontFamily: fonts.mono, textTransform: 'uppercase' },
+    sectionHeader: { paddingHorizontal: 16, paddingTop: 18, paddingBottom: 6, gap: 2 },
+    sectionTitle: { fontSize: 13, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.8, fontFamily: fonts.mono },
+    sectionNote: { color: colors.faint, fontSize: 12 },
+    error: { color: colors.danger, fontSize: 13, marginTop: 4 },
+    row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 10 },
+    title: { color: colors.text, fontWeight: '700', fontSize: 15 },
+    author: { color: colors.muted, fontSize: 13 },
+    meta: { color: colors.faint, fontSize: 12 },
+    empty: { padding: 24, paddingTop: 40 },
+    emptyTitle: { color: colors.text, fontSize: 22, fontWeight: '800', marginBottom: 10, fontFamily: fonts.mono },
+    emptyText: { color: colors.muted, fontSize: 15, lineHeight: 22 },
+  });

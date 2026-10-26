@@ -13,7 +13,7 @@
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import { Directory, File, Paths } from 'expo-file-system';
 import { Stack, useLocalSearchParams } from 'expo-router';
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { KokoroTextToSpeech } from 'react-native-executorch';
 import { Button, ProgressBar, RoundButton } from '@/components/ui';
@@ -23,12 +23,13 @@ import { useLibrary } from '@/lib/library';
 import { usePlayer } from '@/lib/player';
 import { loadBookParagraphs } from '@/lib/storage';
 import { chunkParagraphs, type Chunk } from '@/lib/text';
-import { colors, glyph } from '@/lib/theme';
+import { fonts, glyph, useTheme, type Colors } from '@/lib/theme';
 import { encodeWav } from '@/lib/wav';
 
 const RATES = [0.8, 1, 1.25, 1.5, 1.75, 2];
 
 type Segment = { paragraph: number; chunkIndex: number; file: File };
+type Styles = ReturnType<typeof makeStyles>;
 
 /** Memoised so moving to the next paragraph only re-renders the two rows whose highlight changed. */
 const Paragraph = memo(function Paragraph({
@@ -36,11 +37,13 @@ const Paragraph = memo(function Paragraph({
   index,
   active,
   onPress,
+  styles,
 }: {
   text: string;
   index: number;
   active: boolean;
   onPress: (index: number) => void;
+  styles: Styles;
 }) {
   return (
     <Pressable onPress={() => onPress(index)}>
@@ -61,6 +64,8 @@ function firstSegmentForChunk(segments: Segment[], chunkIndex: number): number {
 }
 
 export default function ReaderScreen() {
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const { id } = useLocalSearchParams<{ id: string }>();
   const { getBook, update } = useLibrary();
   const audiobook = usePlayer();
@@ -414,7 +419,7 @@ export default function ReaderScreen() {
             setTimeout(() => listRef.current?.scrollToIndex({ index: target, animated: false, viewPosition: 0.3 }), 120);
           }}
           renderItem={({ item, index: i }) => (
-            <Paragraph text={item} index={i} active={i === index} onPress={onParagraphPress} />
+            <Paragraph text={item} index={i} active={i === index} onPress={onParagraphPress} styles={styles} />
           )}
         />
       )}
@@ -517,32 +522,33 @@ export default function ReaderScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
-  muted: { color: colors.muted, fontSize: 13, lineHeight: 18 },
-  paragraph: { color: colors.muted, fontSize: 17, lineHeight: 27, marginBottom: 14, padding: 6, borderRadius: 8 },
-  current: { color: colors.text, backgroundColor: `${colors.tts}1F` },
-  dock: {
-    backgroundColor: colors.surface,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
-    paddingHorizontal: 20,
-    paddingTop: 10,
-    paddingBottom: 28,
-    gap: 12,
-  },
-  engineCard: { backgroundColor: colors.surfaceHigh, borderRadius: 12, padding: 14, gap: 8 },
-  engineRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  engineTitle: { color: colors.text, fontWeight: '700', fontSize: 15 },
-  status: { color: colors.faint, fontSize: 12, textAlign: 'center' },
-  controls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 28 },
-  options: { flexDirection: 'row', justifyContent: 'center', gap: 10, flexWrap: 'wrap' },
-  pill: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 999, borderWidth: 1, borderColor: colors.border },
-  pillText: { color: colors.text, fontWeight: '700', fontSize: 13 },
-  backdrop: { flex: 1, backgroundColor: '#0008' },
-  sheet: { maxHeight: '65%', backgroundColor: colors.surface, padding: 20, paddingBottom: 36, borderTopLeftRadius: 18, borderTopRightRadius: 18 },
-  sheetTitle: { color: colors.text, fontSize: 18, fontWeight: '800', marginBottom: 6 },
-  voiceRow: { paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
-  voiceName: { color: colors.text, fontSize: 15, fontWeight: '600' },
-});
+const makeStyles = (colors: Colors) =>
+  StyleSheet.create({
+    screen: { flex: 1, backgroundColor: colors.bg },
+    center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
+    muted: { color: colors.muted, fontSize: 13, lineHeight: 18 },
+    paragraph: { color: colors.muted, fontSize: 17, lineHeight: 27, marginBottom: 14, padding: 6, borderRadius: 4 },
+    current: { color: colors.text, backgroundColor: `${colors.tts}1F` },
+    dock: {
+      backgroundColor: colors.surface,
+      borderTopWidth: 2,
+      borderTopColor: colors.border,
+      paddingHorizontal: 20,
+      paddingTop: 10,
+      paddingBottom: 28,
+      gap: 12,
+    },
+    engineCard: { backgroundColor: colors.surfaceHigh, borderRadius: 5, borderWidth: 2, borderColor: colors.border, padding: 14, gap: 8 },
+    engineRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+    engineTitle: { color: colors.text, fontWeight: '700', fontSize: 15, fontFamily: fonts.mono },
+    status: { color: colors.faint, fontSize: 12, textAlign: 'center' },
+    controls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 28 },
+    options: { flexDirection: 'row', justifyContent: 'center', gap: 10, flexWrap: 'wrap' },
+    pill: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 4, borderWidth: 2, borderColor: colors.border },
+    pillText: { color: colors.text, fontWeight: '700', fontSize: 13, fontFamily: fonts.mono },
+    backdrop: { flex: 1, backgroundColor: '#0008' },
+    sheet: { maxHeight: '65%', backgroundColor: colors.surface, padding: 20, paddingBottom: 36, borderTopWidth: 2, borderColor: colors.border },
+    sheetTitle: { color: colors.text, fontSize: 18, fontWeight: '800', marginBottom: 6, fontFamily: fonts.mono },
+    voiceRow: { paddingVertical: 12, borderBottomWidth: 2, borderBottomColor: colors.border },
+    voiceName: { color: colors.text, fontSize: 15, fontWeight: '600' },
+  });

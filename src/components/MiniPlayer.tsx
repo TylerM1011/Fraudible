@@ -2,10 +2,12 @@
 import { router } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { usePlayer, usePlayerStatus } from '@/lib/player';
-import { colors, glyph } from '@/lib/theme';
+import { fonts, glyph, useTheme, type Colors } from '@/lib/theme';
 import { Cover, ProgressBar } from './ui';
 
 export function MiniPlayer() {
+  const { colors } = useTheme();
+  const styles = makeStyles(colors);
   const { book, trackIndex, toggle } = usePlayer();
   const status = usePlayerStatus();
   if (!book) return null;
@@ -29,11 +31,12 @@ export function MiniPlayer() {
   );
 }
 
-const styles = StyleSheet.create({
-  wrap: { backgroundColor: colors.surfaceHigh, borderTopColor: colors.border, borderTopWidth: StyleSheet.hairlineWidth },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 8 },
-  title: { color: colors.text, fontWeight: '700', fontSize: 14 },
-  sub: { color: colors.muted, fontSize: 12, marginTop: 2 },
-  play: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.accent, alignItems: 'center', justifyContent: 'center' },
-  playText: { color: colors.accentText, fontSize: 16, fontWeight: '800' },
-});
+const makeStyles = (colors: Colors) =>
+  StyleSheet.create({
+    wrap: { backgroundColor: colors.surfaceHigh, borderTopColor: colors.border, borderTopWidth: 2 },
+    row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 8 },
+    title: { color: colors.text, fontWeight: '700', fontSize: 14 },
+    sub: { color: colors.muted, fontSize: 12, marginTop: 2, fontFamily: fonts.mono },
+    play: { width: 40, height: 40, borderRadius: 4, borderWidth: 2, borderColor: colors.border, backgroundColor: colors.accent, alignItems: 'center', justifyContent: 'center' },
+    playText: { color: colors.accentText, fontSize: 16, fontWeight: '800' },
+  });

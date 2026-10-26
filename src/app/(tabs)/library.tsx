@@ -2,14 +2,14 @@
 import * as DocumentPicker from 'expo-document-picker';
 import { File } from 'expo-file-system';
 import { router } from 'expo-router';
-import { memo, useCallback, useRef, useState } from 'react';
+import { memo, useCallback, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { ImportExtractor, type ExtractJob, type ExtractResult } from '@/components/ImportExtractor';
 import { MiniPlayer } from '@/components/MiniPlayer';
 import { Button, Cover, KindBadge, ProgressBar } from '@/components/ui';
 import { useLibrary } from '@/lib/library';
 import { formatTime, usePlayer } from '@/lib/player';
-import { colors, kindColor } from '@/lib/theme';
+import { fonts, kindColors, useTheme, type Colors } from '@/lib/theme';
 import type { LibraryBook } from '@/lib/types';
 
 function titleFromFileName(name: string): string {
@@ -30,15 +30,21 @@ function statusLine(book: LibraryBook): string {
   return total ? `${Math.round((at / total) * 100)}% read` : 'Ready';
 }
 
+type Styles = ReturnType<typeof makeStyles>;
+
 /** Memoised: a progressing download only re-renders its own row. */
 const LibraryRow = memo(function LibraryRow({
   book,
   onPress,
   onLongPress,
+  colors,
+  styles,
 }: {
   book: LibraryBook;
   onPress: (book: LibraryBook) => void;
   onLongPress: (book: LibraryBook) => void;
+  colors: Colors;
+  styles: Styles;
 }) {
   return (
     <Pressable
@@ -54,13 +60,15 @@ const LibraryRow = memo(function LibraryRow({
         <Text style={[styles.meta, book.status === 'error' && { color: colors.danger }]} numberOfLines={2}>
           {statusLine(book)}
         </Text>
-        {book.status === 'downloading' ? <ProgressBar value={book.progress} color={kindColor[book.kind]} /> : null}
+        {book.status === 'downloading' ? <ProgressBar value={book.progress} color={kindColors(colors)[book.kind]} /> : null}
       </View>
     </Pressable>
   );
 });
 
 export default function LibraryScreen() {
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const library = useLibrary();
   const player = usePlayer();
   const [job, setJob] = useState<ExtractJob | null>(null);
@@ -192,7 +200,9 @@ export default function LibraryScreen() {
             </View>
           ) : null
         }
-        renderItem={({ item }) => <LibraryRow book={item} onPress={onRowPress} onLongPress={onRowLongPress} />}
+        renderItem={({ item }) => (
+          <LibraryRow book={item} onPress={onRowPress} onLongPress={onRowLongPress} colors={colors} styles={styles} />
+        )}
       />
       {library.books.length > 0 ? <Text style={styles.hint}>Long-press a book to delete it.</Text> : null}
       <MiniPlayer />
@@ -200,17 +210,18 @@ export default function LibraryScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingBottom: 8 },
-  headerText: { color: colors.muted, fontSize: 13 },
-  importing: { flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: 16, marginBottom: 8, padding: 12, borderRadius: 12, backgroundColor: colors.surface },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 10 },
-  title: { color: colors.text, fontWeight: '700', fontSize: 15 },
-  author: { color: colors.muted, fontSize: 13 },
-  meta: { color: colors.faint, fontSize: 12 },
-  hint: { color: colors.faint, fontSize: 11, textAlign: 'center', paddingVertical: 6 },
-  empty: { padding: 24, paddingTop: 40 },
-  emptyTitle: { color: colors.text, fontSize: 22, fontWeight: '800', marginBottom: 10 },
-  emptyText: { color: colors.muted, fontSize: 15, lineHeight: 22 },
-});
+const makeStyles = (colors: Colors) =>
+  StyleSheet.create({
+    screen: { flex: 1, backgroundColor: colors.bg },
+    header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingBottom: 8 },
+    headerText: { color: colors.muted, fontSize: 13 },
+    importing: { flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: 16, marginBottom: 8, padding: 12, borderRadius: 5, borderWidth: 2, borderColor: colors.border, backgroundColor: colors.surface },
+    row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 10 },
+    title: { color: colors.text, fontWeight: '700', fontSize: 15 },
+    author: { color: colors.muted, fontSize: 13 },
+    meta: { color: colors.faint, fontSize: 12 },
+    hint: { color: colors.faint, fontSize: 11, textAlign: 'center', paddingVertical: 6, fontFamily: fonts.mono },
+    empty: { padding: 24, paddingTop: 40 },
+    emptyTitle: { color: colors.text, fontSize: 22, fontWeight: '800', marginBottom: 10, fontFamily: fonts.mono },
+    emptyText: { color: colors.muted, fontSize: 15, lineHeight: 22 },
+  });
