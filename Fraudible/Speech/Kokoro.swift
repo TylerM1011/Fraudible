@@ -177,8 +177,8 @@ nonisolated final class KokoroEngine: @unchecked Sendable {
     func setGPUAllowed(_ allowed: Bool) {
         flagLock.withLock { gpuAllowedFlag = allowed }
         Log.kokoro.info("GPU \(allowed ? "allowed" : "off (app inactive)", privacy: .public)")
-        if !allowed {
-            gpuGate.lock()
+        // Wait (briefly: this blocks the main thread) for a piece already on the GPU to finish.
+        if !allowed, gpuGate.lock(before: Date().addingTimeInterval(2)) {
             gpuGate.unlock()
         }
     }

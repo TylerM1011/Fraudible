@@ -30,7 +30,11 @@ final class ReaderSession: AudioOwner {
     /// A Kokoro voice the user picked that is still downloading; switched to once it's ready.
     private(set) var pendingVoice: ReaderVoice?
 
-    @ObservationIgnored private var chunks: [Chunk] = []
+    /// The text split for speaking. Kokoro gets shorter pieces (about a sentence) so audio starts
+    /// quickly; it has to synthesize a whole piece before any of it can play.
+    @ObservationIgnored private var appleChunks: [Chunk] = []
+    @ObservationIgnored private var kokoroChunks: [Chunk] = []
+    private var chunks: [Chunk] { voice.engine == .kokoro ? kokoroChunks : appleChunks }
     @ObservationIgnored private var chunkIndex = 0
     @ObservationIgnored private var backend: SpeechBackend?
     /// The word saved when the book was last paused, applied once the text has loaded.
@@ -73,11 +77,12 @@ final class ReaderSession: AudioOwner {
         let id = book.id
         Task {
             do {
-                let (paragraphs, chunks) = try await Task.detached(priority: .userInitiated) {
+                let (paragraphs, appleChunks, kokoroChunks) = try await Task.detached(priority: .userInitiated) {
                     let paragraphs = try Storage.loadParagraphs(bookId: id, fileName: fileName)
-                    return (paragraphs, TextProcessing.chunk(paragraphs))
+                    return (paragraphs, TextProcessing.chunk(paragraphs), TextProcessing.chunk(paragraphs, max: TextProcessing.kokoroChunk))
                 }.value
-                self.chunks = chunks
+                self.appleChunks = appleChunks
+                self.kokoroChunks = kokoroChunks
                 self.paragraphs = paragraphs
                 self.index = min(self.index, max(0, paragraphs.count - 1))
                 // Show the word you paused on last time; play resumes from it.
@@ -141,11 +146,14 @@ final class ReaderSession: AudioOwner {
         }
         pendingVoice = nil
         guard newVoice != voice else { return }
+        // Where we are in the paragraph, since the two engines split the text differently.
+        let resumeAt = word?.lowerBound ?? (chunks.indices.contains(chunkIndex) ? chunks[chunkIndex].offset : 0)
         voice = newVoice
         library.update(bookID) { $0.ttsVoice = newVoice.id }
+        chunkIndex = chunks.lastIndex { $0.paragraph == index && $0.offset <= resumeAt } ?? chunks.firstIndex { $0.paragraph == index } ?? 0
         let wasPlaying = isPlaying
         tearDownBackend()
-        if wasPlaying { start(fromParagraph: index, resumeChunk: chunkIndex, wordOffset: word?.lowerBound) }
+        if wasPlaying { start(fromParagraph: index, wordOffset: resumeAt) }
     }
 
     /// Called when the Kokoro download finishes, to switch to the voice the user asked for.

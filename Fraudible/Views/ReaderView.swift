@@ -162,6 +162,7 @@ private struct ReaderContent: View {
                             .font(.subheadline.weight(.semibold).monospacedDigit())
                             .foregroundStyle(.primary)
                             .frame(width: 48, height: 48)
+                            .contentShape(.circle)
                             .glassEffect(.regular.interactive(), in: .circle)
                     }
                     .accessibilityLabel("Speed, \(rateLabel(session.rate))")
@@ -181,6 +182,9 @@ private struct ReaderContent: View {
                         }
                         .foregroundStyle(.white)
                         .frame(width: 68, height: 68)
+                        // The whole circle is the button, not just the icon; otherwise taps fall
+                        // through to the paragraph underneath and restart reading.
+                        .contentShape(.circle)
                         .glassEffect(.regular.tint(.accentColor).interactive(), in: .circle)
                     }
                     .buttonStyle(.plain)
@@ -193,6 +197,7 @@ private struct ReaderContent: View {
                             .font(.system(size: 18, weight: .semibold))
                             .foregroundStyle(.primary)
                             .frame(width: 48, height: 48)
+                            .contentShape(.circle)
                             .glassEffect(.regular.interactive(), in: .circle)
                     }
                     .buttonStyle(.plain)
@@ -207,6 +212,8 @@ private struct ReaderContent: View {
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 8)
+        .contentShape(.rect)
+        .onTapGesture {} // taps between the buttons shouldn't land on the text behind
     }
 
     private func circleButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
@@ -215,6 +222,7 @@ private struct ReaderContent: View {
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(.primary)
                 .frame(width: 52, height: 52)
+                .contentShape(.circle)
                 .glassEffect(.regular.interactive(), in: .circle)
         }
         .buttonStyle(.plain)

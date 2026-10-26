@@ -5,6 +5,8 @@ nonisolated enum TextProcessing {
     /// Max characters per spoken chunk. Kokoro accepts at most 510 phoneme tokens per call,
     /// and shorter chunks make pausing, skipping and speed changes feel snappier.
     static let maxChunk = 320
+    /// Kokoro chunks: about a sentence, so the first audio is ready within a second or two.
+    static let kokoroChunk = 120
 
     /// Remove the Project Gutenberg licence header and footer, keeping only the book itself.
     static func stripGutenbergBoilerplate(_ text: String) -> String {

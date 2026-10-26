@@ -150,8 +150,10 @@ final class KokoroSpeechBackend: SpeechBackend {
     var onBuffering: ((Bool) -> Void)?
     var onError: ((String) -> Void)?
 
-    /// How many chunks to prepare ahead of the one playing (each is a sentence or two).
-    private static let lookahead = 16
+    /// How many chunks to prepare ahead of the one playing (each is about a sentence).
+    /// About a minute of audio: enough to ride out slow patches without keeping the GPU busy
+    /// (which makes the rest of the app stutter) for minutes at a time.
+    private static let lookahead = 6
 
     private let chunks: [Chunk]
     private let engine: KokoroEngine
