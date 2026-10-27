@@ -198,6 +198,13 @@ final class AudiobookPlayer: AudioOwner {
 
     private func didFinishTrack() {
         guard let book, let tracks = book.tracks else { return }
+        if SleepTimer.shared.mode == .endOfChapter {
+            // Sleep timer: stop here, ready to carry on from the next chapter.
+            if trackIndex + 1 < tracks.count { load(book, index: trackIndex + 1, seconds: 0, autoplay: false) }
+            else { syncPlayingState(false) }
+            SleepTimer.shared.chapterEnded()
+            return
+        }
         if trackIndex + 1 < tracks.count {
             load(book, index: trackIndex + 1, seconds: 0, autoplay: true)
         } else {
@@ -234,4 +241,8 @@ final class AudiobookPlayer: AudioOwner {
     func remoteNext() { nextTrack() }
     func remotePrevious() { previousTrack() }
     func remoteSeek(to seconds: Double) { seek(to: seconds) }
+
+    var isAudioPlaying: Bool { isPlaying }
+    func setOutputVolume(_ volume: Float) { player.volume = volume }
+    func armEndOfChapter() -> Bool { bookID != nil } // each track is a chapter
 }

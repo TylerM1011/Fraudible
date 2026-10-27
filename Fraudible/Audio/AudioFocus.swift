@@ -14,6 +14,14 @@ protocol AudioOwner: AnyObject {
     func remoteNext()
     func remotePrevious()
     func remoteSeek(to seconds: Double)
+
+    // Sleep timer
+    /// Actually producing sound right now (the sleep timer only counts down while this is true).
+    var isAudioPlaying: Bool { get }
+    /// 0...1, for fading out at the end of a sleep timer.
+    func setOutputVolume(_ volume: Float)
+    /// Get ready to stop when the current chapter ends. False if there's no chapter to go by.
+    func armEndOfChapter() -> Bool
 }
 
 /// Lets the audiobook player and the reader stop each other, so two things never talk at once,
@@ -32,6 +40,9 @@ final class AudioFocus {
     }
 
     func isOwner(_ candidate: AudioOwner) -> Bool { owner === candidate }
+
+    /// Whoever has the speaker (or last had it).
+    var current: AudioOwner? { owner }
 
     func activateSession() {
         let session = AVAudioSession.sharedInstance()

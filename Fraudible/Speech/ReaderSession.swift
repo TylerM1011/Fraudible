@@ -39,6 +39,9 @@ final class ReaderSession: AudioOwner {
     @ObservationIgnored private var backend: SpeechBackend?
     /// The word saved when the book was last paused, applied once the text has loaded.
     @ObservationIgnored private var savedWordOffset: Int?
+    /// Paragraphs that start a chapter, and (with the sleep timer on "end of chapter") where to stop.
+    @ObservationIgnored private var chapterStarts: [Int] = []
+    @ObservationIgnored private var chapterStop: Int?
     private let library: Library
     private let kokoro: KokoroManager
 
@@ -79,10 +82,11 @@ final class ReaderSession: AudioOwner {
         let id = book.id
         Task {
             do {
-                let (paragraphs, appleChunks, kokoroChunks) = try await Task.detached(priority: .userInitiated) {
+                let (paragraphs, appleChunks, kokoroChunks, chapterStarts) = try await Task.detached(priority: .userInitiated) {
                     let paragraphs = try Storage.loadParagraphs(bookId: id, fileName: fileName)
-                    return (paragraphs, TextProcessing.chunk(paragraphs), TextProcessing.chunk(paragraphs, max: TextProcessing.kokoroChunk))
+                    return (paragraphs, TextProcessing.chunk(paragraphs), TextProcessing.chunk(paragraphs, max: TextProcessing.kokoroChunk), TextProcessing.chapterStarts(paragraphs))
                 }.value
+                self.chapterStarts = chapterStarts
                 self.appleChunks = appleChunks
                 self.kokoroChunks = kokoroChunks
                 self.paragraphs = paragraphs
@@ -121,11 +125,27 @@ final class ReaderSession: AudioOwner {
     func jump(_ delta: Int) {
         guard let paragraphs, !paragraphs.isEmpty else { return }
         let next = max(0, min(paragraphs.count - 1, index + delta))
+        movedTo(next)
         if isPlaying { start(fromParagraph: next) } else { setParagraph(next) }
     }
 
     func tapParagraph(_ i: Int) {
+        movedTo(i)
         if isPlaying { start(fromParagraph: i) } else { setParagraph(i) }
+    }
+
+    /// Whether there's a chapter heading ahead to stop at.
+    var canStopAtChapterEnd: Bool { nextChapterStart(after: index) != nil }
+
+    private func nextChapterStart(after paragraph: Int) -> Int? {
+        chapterStarts.first { $0 > paragraph }
+    }
+
+    /// Jumping elsewhere moves the "end of chapter" stop to the end of the chapter you jumped to.
+    private func movedTo(_ paragraph: Int) {
+        guard SleepTimer.shared.mode == .endOfChapter, AudioFocus.shared.isOwner(self) else { return }
+        chapterStop = nextChapterStart(after: paragraph)
+        if chapterStop == nil { SleepTimer.shared.cancel() }
     }
 
     func cycleRate() {
@@ -302,6 +322,12 @@ final class ReaderSession: AudioOwner {
             $0.ttsWordOffset = nil
         }
         publishNowPlaying()
+        // Sleep timer: the next chapter is starting, so stop on its heading.
+        if SleepTimer.shared.mode == .endOfChapter, let stop = chapterStop, paragraph >= stop {
+            chapterStop = nil
+            pause()
+            SleepTimer.shared.chapterEnded()
+        }
     }
 
     private func finished() {
@@ -356,4 +382,11 @@ final class ReaderSession: AudioOwner {
     func remoteNext() { jump(1) }
     func remotePrevious() { jump(-1) }
     func remoteSeek(to seconds: Double) {}
+
+    var isAudioPlaying: Bool { isPlaying }
+    func setOutputVolume(_ volume: Float) { backend?.setVolume(volume) }
+    func armEndOfChapter() -> Bool {
+        chapterStop = nextChapterStart(after: index)
+        return chapterStop != nil
+    }
 }

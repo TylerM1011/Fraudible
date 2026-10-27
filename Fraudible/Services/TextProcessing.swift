@@ -54,7 +54,7 @@ nonisolated enum TextProcessing {
             if t.regexFirstMatch(#"^[\[\(]?(\d{1,4}|[ivxlcdm]{1,7}|[IVXLCDM]{1,7})[\]\)]?\.?$"#) != nil { return false }
             if t.regexFirstMatch(#"^(digitized|digitised) by"#, options: [.caseInsensitive]) != nil { return false }
             // Chapter headings repeat in shape ("CHAPTER I", "CHAPTER II"…) but are worth hearing.
-            if t.regexFirstMatch(#"^(chapter|book|part|canto|act|scene|letter)\b"#, options: [.caseInsensitive]) != nil { return true }
+            if t.regexFirstMatch(chapterHeading, options: [.caseInsensitive]) != nil { return true }
             if looksLikeHeader(t), (counts[headerKey(t)] ?? 0) >= 3 { return false }
             return true
         }
@@ -169,6 +169,20 @@ nonisolated enum TextProcessing {
         }
         if !current.isEmpty { out.append(current) }
         return out
+    }
+
+    /// How chapter headings start.
+    static let chapterHeading = #"^(chapter|book|part|canto|act|scene|letter|prologue|epilogue)\b"#
+
+    /// Paragraphs that look like chapter headings ("Chapter 12", "BOOK II", "Prologue", "XIV."),
+    /// so the sleep timer can stop at the end of a chapter.
+    static func chapterStarts(_ paragraphs: [String]) -> [Int] {
+        paragraphs.indices.filter { i in
+            let text = paragraphs[i].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty, text.count <= 80 else { return false }
+            return text.regexFirstMatch(chapterHeading, options: [.caseInsensitive]) != nil
+                || text.regexFirstMatch(#"^[IVXLC]+\.?$"#) != nil
+        }
     }
 
     /// Split paragraphs into speakable chunks of at most `max` characters, tagging each with its

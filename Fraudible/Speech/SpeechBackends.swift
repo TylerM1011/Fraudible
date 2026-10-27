@@ -20,6 +20,8 @@ protocol SpeechBackend: AnyObject {
     func pause()
     func stop()
     func setRate(_ rate: Double)
+    /// 0...1, for the sleep timer's fade-out.
+    func setVolume(_ volume: Float)
 }
 
 extension SpeechBackend {
@@ -46,6 +48,7 @@ final class AppleSpeechBackend: SpeechBackend {
     private var current: (id: ObjectIdentifier, index: Int, base: Int)?
     /// The chunk-relative offset of the word being spoken, so a speed change restarts there.
     private var lastWordOffset = 0
+    private var volume: Float = 1
 
     init(chunks: [Chunk], voiceIdentifier: String, rate: Double) {
         self.chunks = chunks
@@ -79,6 +82,9 @@ final class AppleSpeechBackend: SpeechBackend {
         synthesizer.stopSpeaking(at: .immediate)
     }
 
+    /// Apple's synthesizer can't change volume mid-sentence, so this applies from the next one.
+    func setVolume(_ volume: Float) { self.volume = volume }
+
     /// Takes effect immediately by restarting the current chunk at the new speed.
     func setRate(_ rate: Double) {
         self.rate = rate
@@ -98,6 +104,7 @@ final class AppleSpeechBackend: SpeechBackend {
         Log.reader.info("apple: speak chunk \(index, privacy: .public) at \(base, privacy: .public) voice=\(self.voice?.identifier ?? "default", privacy: .public)")
         let utterance = AVSpeechUtterance(string: String(text[start...]))
         utterance.voice = voice
+        utterance.volume = volume
         utterance.rate = Self.utteranceRate(rate)
         let nextIsNewParagraph = index + 1 < chunks.count && chunks[index + 1].paragraph != chunks[index].paragraph
         utterance.postUtteranceDelay = nextIsNewParagraph ? 0.35 : 0.05
@@ -263,6 +270,10 @@ final class KokoroSpeechBackend: SpeechBackend {
 
     func setRate(_ rate: Double) {
         timePitch.rate = Float(rate)
+    }
+
+    func setVolume(_ volume: Float) {
+        audioEngine.mainMixerNode.outputVolume = volume
     }
 
     // MARK: Playback

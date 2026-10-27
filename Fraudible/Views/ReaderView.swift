@@ -202,16 +202,13 @@ private struct ReaderContent: View {
 
                     circleButton("forward.fill", label: "Next paragraph") { session.jump(1) }
 
-                    Button { showVoices = true } label: {
-                        Image(systemName: session.voice.engine == .kokoro ? "sparkles" : "person.wave.2")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(.primary)
+                    // The voice picker is in the top bar; this spot is the sleep timer.
+                    SleepTimerMenu(owner: session, canStopAtChapterEnd: session.canStopAtChapterEnd) {
+                        SleepTimerIcon()
                             .frame(width: 48, height: 48)
                             .contentShape(.circle)
                             .glassEffect(.regular.interactive(), in: .circle)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Voice: \(session.voice.name)")
                 }
             }
 

@@ -139,6 +139,12 @@ struct ListenView: View {
                         .font(.subheadline.weight(.semibold))
                 }
                 .buttonStyle(.glass)
+
+                SleepTimerMenu(owner: player, canStopAtChapterEnd: true) {
+                    SleepTimerIcon(size: 15)
+                        .frame(minWidth: 22, minHeight: 22)
+                }
+                .buttonStyle(.glass)
             }
             Spacer(minLength: 0)
         }
@@ -157,6 +163,7 @@ struct ListenView: View {
                         .contentTransition(.symbolEffect(.replace))
                         .foregroundStyle(.white)
                         .frame(width: 78, height: 78)
+                        .contentShape(.circle)
                         .glassEffect(.regular.tint(.accentColor).interactive(), in: .circle)
                 }
                 .buttonStyle(.plain)
@@ -173,6 +180,7 @@ struct ListenView: View {
                 .font(.system(size: size * 0.36, weight: .semibold))
                 .foregroundStyle(.primary)
                 .frame(width: size, height: size)
+                .contentShape(.circle)
                 .glassEffect(.regular.interactive(), in: .circle)
         }
         .buttonStyle(.plain)
