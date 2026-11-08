@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UIKit
 
 /// Reads a text-to-speech book aloud: highlights each paragraph and word, remembers where you
 /// stopped (down to the word), and drives whichever speech engine the chosen voice uses
@@ -23,6 +24,9 @@ final class ReaderSession: AudioOwner {
     private(set) var buffering = false
     /// Loading the Kokoro model into memory before the first sentence.
     private(set) var preparingVoice = false
+    /// The prepared audio ran out while the app was in the background (new audio can only be
+    /// made with the app open). The screen offers offline audio when the app comes back.
+    var ranOutInBackground = false
     private(set) var rate: Double
     private(set) var voice: ReaderVoice
     /// Set when something goes wrong; the screen shows it as an alert.
@@ -274,14 +278,17 @@ final class ReaderSession: AudioOwner {
     }
 
     /// Kokoro audio for a chunk: from the book's offline audio when that chunk has been made,
-    /// otherwise synthesized now.
+    /// otherwise synthesized now. In the background only offline audio is used: there the GPU is
+    /// off-limits and the CPU is far slower than playback, so synthesizing would just stutter.
+    /// The backend waits instead, and carries on when the app comes back to the foreground.
     private func audioSource(_ voiceID: String) -> KokoroSpeechBackend.AudioSource {
         let dir = OfflineAudioStore.directory(bookID, voice: voiceID)
         let chunks = chunks, kokoro = kokoro
-        return { index, useCPU in
+        return { index, inBackground in
             if let saved = await OfflineAudioStore.load(index, in: dir) { return saved }
+            if inBackground { throw KokoroError.needsForeground }
             try await kokoro.ensureLoaded()
-            return try await kokoro.engine.synthesize(chunks[index].text, voice: voiceID, useCPU: useCPU)
+            return try await kokoro.engine.synthesize(chunks[index].text, voice: voiceID, useCPU: false)
         }
     }
 
@@ -289,7 +296,11 @@ final class ReaderSession: AudioOwner {
         made.onChunkStart = { [weak self] i in self?.chunkStarted(i) }
         made.onWord = { [weak self] range in self?.wordSpoken(range) }
         made.onFinish = { [weak self] in self?.finished() }
-        made.onBuffering = { [weak self] waiting in self?.buffering = waiting }
+        made.onBuffering = { [weak self] waiting in
+            self?.buffering = waiting
+            if waiting && UIApplication.shared.applicationState == .background { self?.ranOutInBackground = true }
+            self?.publishNowPlaying() // the lock screen shows it paused while waiting for audio
+        }
         made.onError = { [weak self] message in self?.fail(message) }
         backend = made
         return made
@@ -355,7 +366,7 @@ final class ReaderSession: AudioOwner {
             album: total > 0 ? "Paragraph \(index + 1) of \(total)" : "Fraudible",
             duration: nil,
             elapsed: 0,
-            rate: isPlaying ? 1 : 0,
+            rate: isPlaying && !buffering ? 1 : 0,
             artwork: nil
         )
     }

@@ -157,14 +157,16 @@ final class KokoroSpeechBackend: SpeechBackend {
     var onBuffering: ((Bool) -> Void)?
     var onError: ((String) -> Void)?
 
-    /// How many chunks to prepare ahead of the one playing (each is about a sentence).
-    /// About a minute of audio: enough to ride out slow patches without keeping the GPU busy
-    /// (which makes the rest of the app stutter) for minutes at a time.
-    private static let lookahead = 6
+    /// How much audio to prepare ahead of what's playing, in seconds. New audio can only be made
+    /// while the app is open (iOS keeps the GPU from apps in the background), so this is how long
+    /// listening carries on after the phone is locked. The GPU makes audio about 3× faster than
+    /// it plays, so building up this lead takes a minute or two.
+    private static let lookaheadSeconds: Double = 5 * 60
 
     /// Where each chunk's audio comes from: the book's offline audio if it has been made,
-    /// otherwise Kokoro synthesizing it now. The flag asks for the CPU (app in the background).
-    typealias AudioSource = (_ index: Int, _ useCPU: Bool) async throws -> KokoroAudio
+    /// otherwise Kokoro synthesizing it now. The flag says the app is in the background, where
+    /// only offline audio is available (the source throws otherwise).
+    typealias AudioSource = (_ index: Int, _ inBackground: Bool) async throws -> KokoroAudio
 
     private let chunks: [Chunk]
     private let source: AudioSource
@@ -231,7 +233,10 @@ final class KokoroSpeechBackend: SpeechBackend {
         paused = false
         position = index
         startWordOffset = max(0, wordOffset)
-        buffers = buffers.filter { $0.key >= index - 1 && $0.key <= index + Self.lookahead }
+        // Keep one chunk behind and the run of ready chunks from here on; drop the rest.
+        var keep = index
+        while buffers[keep] != nil { keep += 1 }
+        buffers = buffers.filter { $0.key >= index - 1 && $0.key < keep }
         words = words.filter { buffers[$0.key] != nil }
         startBuilder()
         playCurrent()
@@ -390,10 +395,16 @@ final class KokoroSpeechBackend: SpeechBackend {
 
     // MARK: Building
 
+    /// The first chunk from the playing one on that isn't ready, unless enough audio is ready ahead.
     private func nextToBuild() -> Int? {
-        let end = min(chunks.count, position + Self.lookahead)
-        guard position < end else { return nil }
-        return (position..<end).first { buffers[$0] == nil }
+        var ahead: Double = 0
+        var index = position
+        while index < chunks.count {
+            guard let buffer = buffers[index] else { return ahead < Self.lookaheadSeconds ? index : nil }
+            ahead += Double(buffer.frameLength) / KokoroEngine.sampleRate
+            index += 1
+        }
+        return nil
     }
 
     private func startBuilder() {
@@ -403,18 +414,18 @@ final class KokoroSpeechBackend: SpeechBackend {
         builder = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self, token == self.builderToken, let index = self.nextToBuild() else { break }
-                let useCPU = UIApplication.shared.applicationState == .background
+                let inBackground = UIApplication.shared.applicationState == .background
                 do {
-                    let audio = try await self.source(index, useCPU)
+                    let audio = try await self.source(index, inBackground)
                     guard token == self.builderToken, !Task.isCancelled else { break }
                     self.buffers[index] = self.makeBuffer(audio.samples)
                     self.words[index] = audio.words
                     if self.waiting && index == self.position { self.playCurrent() }
                 } catch {
                     guard token == self.builderToken else { break }
-                    // iOS limits heavy work in the background. Rather than failing, wait (showing
+                    // New audio can't be made in the background. Rather than failing, wait (showing
                     // "Preparing audio…") and carry on when the app comes back to the foreground.
-                    if UIApplication.shared.applicationState != .background {
+                    if (error as? KokoroError) != .needsForeground && UIApplication.shared.applicationState != .background {
                         self.onError?(error.localizedDescription)
                     }
                     break

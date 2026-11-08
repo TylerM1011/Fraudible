@@ -8,10 +8,40 @@ struct ReaderView: View {
     @Environment(Library.self) private var library
     @Environment(KokoroManager.self) private var kokoro
     @Environment(AppRouter.self) private var router
+    @Environment(OfflineAudioMaker.self) private var maker
+    @Environment(\.scenePhase) private var scenePhase
     @State private var session: ReaderSession?
     @State private var showVoices = false
     @State private var showPDF = false
     @State private var showOffline = false
+    @State private var offlinePrompt: OfflinePrompt?
+
+    /// Why the app suggests making offline audio.
+    private enum OfflinePrompt {
+        /// First time this book is read aloud with Kokoro.
+        case firstListen
+        /// Listening stopped with the phone locked because the prepared audio ran out.
+        case ranOut
+
+        var title: String {
+            switch self {
+            case .firstListen: "Listen with the Screen Off?"
+            case .ranOut: "Listening Paused"
+            }
+        }
+
+        var message: String {
+            switch self {
+            case .firstListen:
+                "Fraudible can only make new audio while it’s open, so with your phone locked it plays about 5 minutes ahead. Make offline audio to listen to the whole book with the screen off. It’s made on your iPhone while Fraudible is open."
+            case .ranOut:
+                "The audio prepared ahead ran out while your phone was locked. Make offline audio to listen to the whole book with the screen off."
+            }
+        }
+    }
+
+    /// Books already asked about on their first listen, so the suggestion only comes once each.
+    private static let promptedKey = "fraudible.offlineAudioPrompted"
 
     var body: some View {
         Group {
@@ -61,6 +91,21 @@ struct ReaderView: View {
                     .presentationDetents([.medium, .large])
             }
         }
+        .alert(offlinePrompt?.title ?? "", isPresented: Binding(get: { offlinePrompt != nil }, set: { if !$0 { offlinePrompt = nil } }), presenting: offlinePrompt) { _ in
+            Button("Make Offline Audio") { showOffline = true }
+            Button("Not Now", role: .cancel) {}
+        } message: { prompt in
+            Text(prompt.message)
+        }
+        .onChange(of: session?.isPlaying) { _, playing in
+            if playing == true { offerOfflineAudioOnFirstListen() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Back in the app after the audio ran out with the phone locked.
+            guard phase == .active, let session, session.ranOutInBackground else { return }
+            session.ranOutInBackground = false
+            if maker.job(bookID) == nil { offlinePrompt = .ranOut }
+        }
         .onAppear {
             if session == nil, let book = library.book(bookID) {
                 session = ReaderSession(book: book, library: library, kokoro: kokoro)
@@ -74,6 +119,18 @@ struct ReaderView: View {
         .onChange(of: kokoro.isDownloaded) { _, downloaded in
             if downloaded { session?.kokoroBecameAvailable() }
         }
+    }
+
+    /// The first time a book is read aloud with Kokoro, suggest offline audio, unless it's
+    /// already made or being made.
+    private func offerOfflineAudioOnFirstListen() {
+        guard let session, session.voice.engine == .kokoro, maker.job(bookID) == nil,
+              !OfflineAudioStore.isComplete(bookID, voice: session.voice.engineVoiceID) else { return }
+        var prompted = UserDefaults.standard.stringArray(forKey: Self.promptedKey) ?? []
+        guard !prompted.contains(bookID) else { return }
+        prompted.append(bookID)
+        UserDefaults.standard.set(prompted, forKey: Self.promptedKey)
+        offlinePrompt = .firstListen
     }
 }
 

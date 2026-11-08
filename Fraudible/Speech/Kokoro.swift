@@ -45,11 +45,15 @@ final class KokoroManager {
     init() {
         isDownloaded = Self.isSupported && Self.modelIsComplete()
         // iOS terminates apps that use the GPU in the background. Switch Kokoro to the CPU as
-        // soon as the app starts to leave the screen (waiting for any sentence already on the
-        // GPU to finish), and back once it's active again.
+        // soon as the app starts to leave the screen, and back once it's active again. A sentence
+        // already on the GPU can't be interrupted, so finish it before didEnterBackground returns:
+        // that's the deadline iOS gives for GPU work (a sentence takes a few seconds on an iPhone).
         let kokoroEngine = self.engine
         NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
             kokoroEngine.setGPUAllowed(false)
+        }
+        NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+            kokoroEngine.waitForGPUIdle()
         }
         NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
             kokoroEngine.setGPUAllowed(true)
@@ -141,10 +145,11 @@ final class KokoroManager {
     }
 }
 
-nonisolated enum KokoroError: LocalizedError {
-    case notDownloaded, corruptDownload, noVoices, unknownVoice(String)
+nonisolated enum KokoroError: LocalizedError, Equatable {
+    case notDownloaded, corruptDownload, noVoices, unknownVoice(String), needsForeground
     var errorDescription: String? {
         switch self {
+        case .needsForeground: "Open Fraudible to prepare more audio."
         case .notDownloaded: "The Kokoro voice hasn’t been downloaded yet."
         case .corruptDownload: "The voice download was incomplete. Please try again."
         case .noVoices: "The Kokoro voice styles are missing from the app."
@@ -172,14 +177,23 @@ nonisolated final class KokoroEngine: @unchecked Sendable {
     private let flagLock = NSLock()
     private var gpuAllowedFlag = true
 
-    /// Called on the main thread as the app leaves / returns to the foreground. Turning the GPU
-    /// off waits for any piece already running on it, so nothing reaches the GPU once in background.
+    /// Called on the main thread as the app leaves / returns to the foreground. Once off, new
+    /// pieces run on the CPU; a piece already on the GPU carries on (see `waitForGPUIdle`).
     func setGPUAllowed(_ allowed: Bool) {
         flagLock.withLock { gpuAllowedFlag = allowed }
         Log.kokoro.info("GPU \(allowed ? "allowed" : "off (app inactive)", privacy: .public)")
-        // Wait (briefly: this blocks the main thread) for a piece already on the GPU to finish.
-        if !allowed, gpuGate.lock(before: Date().addingTimeInterval(2)) {
+    }
+
+    /// Called on the main thread from didEnterBackground: block until a piece already on the GPU
+    /// has finished, so nothing is submitted to it after iOS revokes access. iOS allows about
+    /// 5 seconds here before it kills the app, so stop waiting a little before that.
+    func waitForGPUIdle() {
+        let started = Date()
+        if gpuGate.lock(before: started.addingTimeInterval(4)) {
             gpuGate.unlock()
+            Log.kokoro.info("GPU idle for background after \(Date().timeIntervalSince(started), privacy: .public)s")
+        } else {
+            Log.kokoro.error("GPU still busy entering background")
         }
     }
 
@@ -190,7 +204,20 @@ nonisolated final class KokoroEngine: @unchecked Sendable {
         let onGPU = allowed && !preferCPU
         if !onGPU { gpuGate.unlock() }
         defer { if onGPU { gpuGate.unlock() } }
-        return try Device.withDefaultDevice(onGPU ? Device.gpu : Device.cpu) { try body() }
+        let device = onGPU ? Device.gpu : Device.cpu
+        // withDefaultDevice only changes the Swift-side default. Some of MLX's C++ code ignores the
+        // stream it's given and uses the C++ global default instead (fast.cpp's layer_norm CPU
+        // fallback creates a multiply that way), which is the GPU unless set here. All Kokoro work
+        // runs on this one serial queue, so setting the global per piece is safe.
+        Device.setDefault(device: device)
+        return try Device.withDefaultDevice(device) {
+            let result = try body()
+            // Kokoro adds random noise, and MLX leaves the global random key as a lazy op on the
+            // device that made it. Evaluate it here, or the first CPU piece in the background
+            // would run that pending op on the GPU (and iOS would kill the app).
+            if onGPU { eval(MLXRandom.globalState) }
+            return result
+        }
     }
 
     func load(modelFile: URL) async throws {
@@ -206,7 +233,9 @@ nonisolated final class KokoroEngine: @unchecked Sendable {
                 self.voices = voices
                 let started = Date()
                 Log.kokoro.info("load: \(voices.count, privacy: .public) voice styles; creating KokoroTTS")
-                self.tts = KokoroTTS(modelPath: modelFile, g2p: .misaki)
+                // Build the model on the CPU: loading rearranges weights lazily, and lazy GPU ops
+                // would make the first piece in the background touch the GPU.
+                self.tts = Device.withDefaultDevice(Device.cpu) { KokoroTTS(modelPath: modelFile, g2p: .misaki) }
                 Log.kokoro.info("load: model ready in \(Date().timeIntervalSince(started), privacy: .public)s")
                 continuation.resume()
             }
